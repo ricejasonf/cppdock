@@ -1,0 +1,5 @@
+FROM ubuntu:artful
+
+RUN  ln -s /usr/local/src/emscripten/system /opt/sysroot
+
+COPY toolchain/emscripten.cmake /opt/toolchain.cmake

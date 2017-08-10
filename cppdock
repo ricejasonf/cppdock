@@ -1,0 +1,82 @@
+#!/usr/bin/env python
+
+import os
+import ConfigParser
+import subprocess
+
+root_path = os.path.dirname(os.path.abspath(__file__))
+
+def main():
+  lock_ini_file()
+
+def lock_ini_file():
+  config = PrettyConfigParser()
+  config.read(root_path + '/cppdock.ini')
+  for section in config.sections():
+    if section == 'cppdock':
+      continue
+    for item in config.items(section):
+      lock_item(config, 'linux_x64', item)
+    config.write(open(root_path + '/cppdock.ini', 'wb'))
+
+def make_archive_url(repo, branch):
+  '{0}/archive/{1}.zip'.format(repo, branch)
+
+def lock_item(config, section, item):
+  repo, branch = item
+  config.set(section, repo, get_current_sha_with_comment(item))
+
+def get_current_sha_with_comment(item):
+  repo, branch = item
+  if len(branch) >= 40:
+    return branch
+  else:
+    branch = normalize_branch_name(branch)
+    lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
+    for line in lines:
+      if line.endswith(branch):
+        return line[0:40] + ' # ' + (item[1] or 'HEAD')
+    raise ValueError("Unable to get SHA from remote git repository")
+
+def normalize_repo_name(name):
+  return "https://github.com/" + name;
+
+def normalize_branch_name(name):
+  if len(name) == 0:
+    return "HEAD"
+  else:
+    return "refs/heads/" + name
+
+def is_sha(name):
+  return len(name) == 40
+
+class PrettyConfigParser(ConfigParser.RawConfigParser):
+  def write(self, fp):
+    max_key_length = get_max_key_length(self)
+    if self._defaults:
+      fp.write("[%s]\n" % DEFAULTSECT)
+      for (key, value) in self._defaults.items():
+        fp.write("%s = %s\n" % (key, str(value).replace('\n', '\n\t')))
+      fp.write("\n")
+    for section in self._sections:
+      fp.write("[%s]\n" % section)
+      for (key, value) in self._sections[section].items():
+        if key == "__name__":
+          continue
+        if (value is not None) or (self._optcre == self.OPTCRE):
+          equal_left_padding = ' ' * (max_key_length - len(key))
+          key = " = ".join((key + equal_left_padding, str(value).replace('\n', '\n\t')))
+
+        fp.write("%s\n" % (key))
+      fp.write("\n")
+
+def get_max_key_length(config):
+  length = 0
+  for section in config.sections():
+    for item in config.items(section):
+      len_ = len(item[0])
+      if (len_ > length):
+        length = len_
+  return length
+
+main()
