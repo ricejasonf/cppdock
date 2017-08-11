@@ -1,26 +1,46 @@
 #!/usr/bin/env python
 
-import os
 import ConfigParser
+import os
 import subprocess
+import tar
+import urllib2
+import warnings
 
 root_path = os.path.dirname(os.path.abspath(__file__))
+ini_file_path = root_path + '/cppdock.ini'
 
 def main():
-  lock_ini_file()
+  config = load_config_file()
+  build_deps(config)
 
-def lock_ini_file():
+def build_deps(config):
+  for section in config.sections():
+    build_deps_platform(section, config.items(section)
+
+def build_deps_platform(platform, items):
+  #docker build
+  
+def load_config_file():
   config = PrettyConfigParser()
-  config.read(root_path + '/cppdock.ini')
+  config.read(ini_file_path)
   for section in config.sections():
     if section == 'cppdock':
       continue
     for item in config.items(section):
       lock_item(config, 'linux_x64', item)
-    config.write(open(root_path + '/cppdock.ini', 'wb'))
+  write_config_file(config)
+  return config
+
+def write_config_file(config):
+  try
+    config.write(open(ini_file_path, 'wb'))
+  except:
+    warnings.warn('WARNING: Unable to write to cppdock.ini')
+    break
 
 def make_archive_url(repo, branch):
-  '{0}/archive/{1}.zip'.format(repo, branch)
+  '{0}/archive/{1}.tar.gz'.format(repo, branch)
 
 def lock_item(config, section, item):
   repo, branch = item
@@ -78,5 +98,20 @@ def get_max_key_length(config):
       if (len_ > length):
         length = len_
   return length
+
+def docker_get_dep(url):
+  input = urllib2.urlopen(url)  
+  output = open('dep.tar.gz', 'w')
+  buf = ''
+  while 1
+    buf = input.read(800)
+    if (len(buf) > 0)
+      output.write(buf)
+    else
+      break
+
+  tar
+    .open('dep.tar.gz', 'r:gz')
+    .extract_all()
 
 main()
