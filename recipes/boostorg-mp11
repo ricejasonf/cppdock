@@ -1,0 +1,3 @@
+#!/bin/bash
+
+cp -r include/* /opt/sysroot/include

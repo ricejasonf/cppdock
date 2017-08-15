@@ -1,0 +1,12 @@
+#!/bin/bash
+
+mkdir build && cd build \
+&& cmake \
+  -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
+    -DCMAKE_INSTALL_PREFIX=/opt/sysroot \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DJSONCPP_WITH_TESTS=OFF \
+  -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF\
+  .. \
+&& make install \
+&& mv /usr/local/include/json /usr/local/include/jsoncpp

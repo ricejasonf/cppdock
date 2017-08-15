@@ -1,27 +1,92 @@
 #!/usr/bin/env python
 
 import ConfigParser
+import argparse
 import os
 import subprocess
+import sys
 import tarfile
 import urllib2
 import warnings
 
-root_path = os.path.dirname(os.path.abspath(__file__))
-ini_file_path = root_path + '/cppdock.ini'
+default_compiler_image = 'ricejasonf/emscripten'
+root_path = os.path.abspath('.')
+default_ini_file_path = root_path + '/cppdock.ini'
 
-def main():
-    config = load_config_file()
-    #build_deps(config)
+def parse_args_command(args):
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('command',      choices   = [
+                                                        'init',
+                                                        'install_dep',
+                                                    ])
+    return parser.parse_args(args)
 
-def build_deps(config):
-    for section in config.sections():
-        build_deps_platform(section, config.items(section))
+def parse_args_init(args):
+    parser = argparse.ArgumentParser(prog='cppdock init')
+    parser.add_argument('-f', '--file', dest      = 'ini_file_path',
+                                        default   = default_ini_file_path,
+                                        help      = 'Specify path to ini file')
+    return parser.parse_args(args)
 
-#def build_deps_platform(platform, items):
-    #docker build
+def parse_args_install_dep(args):
+    parser = argparse.ArgumentParser(prog='cppdock install_dep')
+    group = parser.add_argument_group('required arguments')
+    group.add_argument('--platform',    dest        = 'platform',
+                                        required    = True,
+                                        help        = 'Token for target platform')
 
-def load_config_file():
+    group.add_argument('--repo',        dest        = 'repo',
+                                        required    = True,
+                                        help        = 'Name of git repo (e.g. boostorg/hana)')
+
+    group.add_argument('--branch',      dest        = 'branch',
+                                        required    = True,
+                                        help        = 'SHA1 of git revision')
+    return parser.parse_args(args)
+
+def dispatch(command_args, cli_args):
+    command = parse_args_command(command_args).command
+    commands = {
+        None:           lambda: None,
+        'init':         (command_default,       parse_args_init),
+        'install_dep':  (command_install_dep,   parse_args_install_dep),
+    }
+    if command in commands:
+        args = commands[command][1](cli_args)
+        commands[command][0](args)
+
+def command_default(args):
+    load_config_file_with_args(args)
+
+def command_install_dep(args):
+    platform, repo, branch = args
+    check_sysroot()
+    url = make_archive_url(repo, branch)
+    input = urllib2.urlopen(url)
+    output = open('dep.tar.gz', 'w')
+    buf = ''
+    while True:
+        buf = input.read(800)
+        if (len(buf) > 0):
+            output.write(buf)
+        else:
+            break
+
+    tar.open('dep.tar.gz', 'r:gz').extract_all('dep')
+    recipe = find_recipe(platform, repo)
+    subprocess.Popen([recipe], cwd = './dep')
+
+def install_deps_platform(platform, items):
+    for i in range(len(items)):
+        repo, branch = items[i]
+        branch = branch[0:40]
+        install_dep(i, platform, repo, branch)
+
+def load_config_file_with_args(args):
+    ini_file_path = args.ini_file_path
+    return load_config_file(ini_file_path)
+
+def load_config_file(ini_file_path):
     config = PrettyConfigParser()
     config.read(ini_file_path)
     for section in config.sections():
@@ -29,14 +94,14 @@ def load_config_file():
             continue
         for item in config.items(section):
             lock_item(config, 'linux_x64', item)
-    write_config_file(config)
+    write_config_file(config, ini_file_path)
     return config
 
-def write_config_file(config):
+def write_config_file(config, ini_file_path):
     try:
         config.write(open(ini_file_path, 'wb'))
     except:
-        warnings.warn('WARNING: Unable to write to cppdock.ini')
+        warnings.warn('WARNING: Unable to write to ini file')
 
 def lock_item(config, section, item):
     repo, branch = item
@@ -95,23 +160,77 @@ def get_max_key_length(config):
                 length = len_
     return length
 
-def docker_install_dep(repo, branch):
-    url = make_archive_url(repo, branch)
-    input = urllib2.urlopen(url)
-    output = open('dep.tar.gz', 'w')
-    buf = ''
-    while True:
-        buf = input.read(800)
-        if (len(buf) > 0):
-            output.write(buf)
-        else:
-            break
-
-    tar.open('dep.tar.gz', 'r:gz').extract_all('dep_' + i)
-    subprocess.Popen(['cppdock', 'install', repo, branch], cwd = './dep_' + i)
-
 def make_archive_url(repo, branch):
     '{0}/archive/{1}.tar.gz'.format(repo, branch)
 
+def find_recipe(platform, repo):
+    repo = repo.replace('/', '-')
+    local_recipe_path = root_path + '/cppdock_recipes'
+    builtin_recipe_path = os.path.expanduser('~') + '/.cppdock_recipes'
+    repo_with_platform = repo + '-' + platform
+    xs = [
+        local_recipe_path   + '/' + repo_with_platform,
+        local_recipe_path   + '/' + repo,
+        builtin_recipe_path + '/' + repo_with_platform,
+        builtin_recipe_path + '/' + repo
+    ]
+    for x in xs:
+        if os.path.isfile(x):
+            return x
+    raise ValueError('Unable to find cppdock recipe:' + repo_with_platform)
 
-main()
+def check_sysroot():
+    if not os.path.isdir('opt/sysroot'):
+        raise ValueError('Sysroot directory is missing: /opt/sysroot')
+
+def get_arg(args, i):
+    next(iter(args[i:i+1]), None)
+
+def get_config_option(config, name):
+    defaults = {
+        project: None,
+        cppdock: 'ricejasonf/cppdock',
+        linux_x64: default_compiler_image,
+        emscripten: default_compiler_image,
+        tvossimulator: default_compiler_image
+    }
+    try:
+        value = config.get('cppdock', name)
+    except:
+        if name in defaults:
+            value = defaults[name]
+    if value == None:
+        raise ValueError('Config option has no default for "{0}"'.format([name]))
+    return value
+
+def make_dep_image(config, platform, repo, branch):
+    cppdock_image = "{0}:{1}".format([
+        get_config_option(config, 'cppdock'),
+        platform
+    ])
+    compiler_image = get_config_option(config, platform)
+    tag_name = "{0}_deps_{1}:{2}".format([
+        get_config_option(config, 'project'),
+        branch,
+        platform
+    ])
+    dockerfile = make_dep_image_dockerfile(cppdock_image, compiler_image, platform, repo, branch)
+    #p = subprocess.Popen(['docker', '-t ' + tag_name, '-'], stdin=subprocess.PIPE)
+    p = subprocess.Popen(['cat'], stdin=subprocess.PIPE)
+    out, err = p.communicate(dockerfile)
+    sys.write.stdout(out)
+    sys.write.stderr(err)
+
+def make_dep_image_dockerfile(cppdock_image, compiler_image, platform, repo, branch):
+    return """
+FROM {0} as platform
+FROM {1} as compiled
+    COPY --from=platform /opt/sysroot/ /opt/sysroot
+    COPY --from=platform /opt/toolchain.cmake /opt/tookchain.cmake
+    RUN cppdock install_dep {2} {3} {4}
+FROM ubuntu:artful
+    COPY --from=compiled /opt/sysroot/ /opt/sysroot
+    COPY --from=platform /opt/toolchain.cmake /opt/tookchain.cmake
+    """.format([cppdock_image, compiler_image, platform, repo, branch])
+
+dispatch(os.sys.argv[1:2], os.sys.argv[2:])

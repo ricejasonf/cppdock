@@ -1,0 +1,4 @@
+#!/bin/bash
+
+cp asio/asio/include/asio.hpp /opt/sysroot/include
+cp -r asio/asio/include/asio /opt/sysroot/include
