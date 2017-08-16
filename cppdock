@@ -4,6 +4,7 @@ import ConfigParser
 import argparse
 import os
 import subprocess
+import string
 import sys
 import tarfile
 import urllib2
@@ -17,6 +18,7 @@ def parse_args_command(args):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('command',      choices   = [
                                                         'init',
+                                                        'build',
                                                         'install_dep',
                                                     ])
     return parser.parse_args(args)
@@ -28,35 +30,43 @@ def parse_args_init(args):
                                         help      = 'Specify path to ini file')
     return parser.parse_args(args)
 
+def parse_args_build(args):
+    parser = argparse.ArgumentParser(prog='cppdock build')
+    parser.add_argument('-f', '--file', dest      = 'ini_file_path',
+                                        default   = default_ini_file_path,
+                                        help      = 'Specify path to ini file')
+
+    group  = parser.add_argument_group('required arguments')
+    group.add_argument('platform',      help      = 'Token for target platform')
+
+    return parser.parse_args(args)
+
 def parse_args_install_dep(args):
     parser = argparse.ArgumentParser(prog='cppdock install_dep')
-    group = parser.add_argument_group('required arguments')
-    group.add_argument('--platform',    dest        = 'platform',
-                                        required    = True,
-                                        help        = 'Token for target platform')
-
-    group.add_argument('--repo',        dest        = 'repo',
-                                        required    = True,
-                                        help        = 'Name of git repo (e.g. boostorg/hana)')
-
-    group.add_argument('--branch',      dest        = 'branch',
-                                        required    = True,
-                                        help        = 'SHA1 of git revision')
+    group  = parser.add_argument_group('required arguments')
+    group.add_argument('platform',      help      = 'Token for target platform')
+    group.add_argument('branch',        help      = 'SHA1 of git revision')
+    group.add_argument('repo',          help      = 'Name of git repo (e.g. boostorg/hana)')
     return parser.parse_args(args)
 
 def dispatch(command_args, cli_args):
     command = parse_args_command(command_args).command
     commands = {
         None:           lambda: None,
-        'init':         (command_default,       parse_args_init),
+        'init':         (command_init,          parse_args_init),
+        'build':        (command_build,         parse_args_build),
         'install_dep':  (command_install_dep,   parse_args_install_dep),
     }
     if command in commands:
         args = commands[command][1](cli_args)
         commands[command][0](args)
 
-def command_default(args):
+def command_init(args):
     load_config_file_with_args(args)
+
+def command_build(args):
+    config = load_config_file_with_args(args)
+    make_dep_image(config, args.platform)
 
 def command_install_dep(args):
     platform, repo, branch = args
@@ -188,11 +198,11 @@ def get_arg(args, i):
 
 def get_config_option(config, name):
     defaults = {
-        project: None,
-        cppdock: 'ricejasonf/cppdock',
-        linux_x64: default_compiler_image,
-        emscripten: default_compiler_image,
-        tvossimulator: default_compiler_image
+        'project': None,
+        'cppdock': 'ricejasonf/cppdock',
+        'linux_x64': default_compiler_image,
+        'emscripten': default_compiler_image,
+        'tvossimulator': default_compiler_image
     }
     try:
         value = config.get('cppdock', name)
@@ -200,37 +210,52 @@ def get_config_option(config, name):
         if name in defaults:
             value = defaults[name]
     if value == None:
-        raise ValueError('Config option has no default for "{0}"'.format([name]))
+        raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_dep_image(config, platform, repo, branch):
-    cppdock_image = "{0}:{1}".format([
+def make_dep_image(config, platform):
+    cppdock_image = "{0}:{1}".format(
         get_config_option(config, 'cppdock'),
         platform
-    ])
+    )
     compiler_image = get_config_option(config, platform)
-    tag_name = "{0}_deps_{1}:{2}".format([
+    tag_name = "{0}_deps:{1}".format(
         get_config_option(config, 'project'),
-        branch,
         platform
-    ])
-    dockerfile = make_dep_image_dockerfile(cppdock_image, compiler_image, platform, repo, branch)
+    )
+    dockerfile = make_deps_dockerfile(config, cppdock_image, compiler_image, platform)
     #p = subprocess.Popen(['docker', '-t ' + tag_name, '-'], stdin=subprocess.PIPE)
     p = subprocess.Popen(['cat'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
-    sys.write.stdout(out)
-    sys.write.stderr(err)
+    print """
 
-def make_dep_image_dockerfile(cppdock_image, compiler_image, platform, repo, branch):
+Finished building {0}.
+    """.format(tag_name)
+
+def make_deps_dockerfile(config, cppdock_image, compiler_image, platform):
+    run_deps = string.join(["""
+    RUN cppdock install_dep {0} {1} {2}""".format(x, y, z) for x, y, z in get_deps_from_config(config, platform)])
+
     return """
 FROM {0} as platform
-FROM {1} as compiled
+FROM {1} as build
+    COPY --from=platform /opt/sdk/ /opt/sdk
     COPY --from=platform /opt/sysroot/ /opt/sysroot
-    COPY --from=platform /opt/toolchain.cmake /opt/tookchain.cmake
-    RUN cppdock install_dep {2} {3} {4}
+    COPY --from=platform /opt/toolchain.cmake /opt/toolchain.cmake
+    COPY --from=platform /usr/local/bin/cppdock /usr/local/bin/cppdock
+
+    WORKDIR /usr/local/src{2}
+
 FROM ubuntu:artful
-    COPY --from=compiled /opt/sysroot/ /opt/sysroot
-    COPY --from=platform /opt/toolchain.cmake /opt/tookchain.cmake
-    """.format([cppdock_image, compiler_image, platform, repo, branch])
+    COPY --from=build /opt/sdk/ /opt/sdk
+    COPY --from=build /opt/sysroot/ /opt/sysroot
+    COPY --from=build /opt/toolchain.cmake /opt/toolchain.cmake
+    """.format(cppdock_image, compiler_image, run_deps)
+
+def get_deps_from_config(config, platform):
+    if not config.has_section(platform):
+        raise ValueError('Platform is not specified in cppdock ini file')
+    return [(platform, item[1][0:40], item[0]) for item in config.items(platform)]
+        
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
