@@ -1,15 +1,19 @@
-.PHONY: platforms cppdock linux_x64 emscripten tvossimulator
+.PHONY: platforms cppdock platform_linux_x64 platform_emscripten platform_tvossimulator
 
+# DEPRECATED
 cppdock:
 	docker build --force-rm=true -t ricejasonf/cppdock .
 
-platforms: linux_x64 emscripten tvossimulator
+platforms: platform_linux_x64 platform_emscripten platform_tvossimulator
 
-linux_x64:
+platform_linux_x64:
 	docker build --force-rm=true -f ./Dockerfile-linux_x64 -t ricejasonf/cppdock:linux_x64 .
 
-emscripten:
+platform_emscripten:
 	docker build --force-rm=true -f ./Dockerfile-emscripten -t ricejasonf/cppdock:emscripten .
 
-tvossimulator:
+platform_tvossimulator:
 	docker build --force-rm=true -f ./Dockerfile-tvossimulator -t ricejasonf/cppdock:tvossimulator .
+
+install:
+	cp ./cppdock /usr/local/bin/
