@@ -1,5 +1,7 @@
 FROM ubuntu:artful
 
-RUN  ln -s /usr/local/src/emscripten/system /opt/sysroot
+RUN  ln -s /usr/local/src/emscripten/system /opt/sysroot \
 
+COPY cppdock /usr/local/bin
+COPY recipes/ /root/.cppdock_recipes
 COPY toolchain/emscripten.cmake /opt/toolchain.cmake

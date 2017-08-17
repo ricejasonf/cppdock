@@ -6,11 +6,10 @@ import os
 import subprocess
 import string
 import sys
-import tarfile
 import urllib2
 import warnings
+import zipfile
 
-default_compiler_image = 'ricejasonf/emscripten'
 root_path = os.path.abspath('.')
 default_ini_file_path = root_path + '/cppdock.ini'
 
@@ -35,6 +34,10 @@ def parse_args_build(args):
     parser.add_argument('-f', '--file', dest      = 'ini_file_path',
                                         default   = default_ini_file_path,
                                         help      = 'Specify path to ini file')
+
+    parser.add_argument('--print-only', dest      = 'print_only',
+                                        action    = 'store_true',
+                                        help      = 'Print Dockerfile without building')
 
     group  = parser.add_argument_group('required arguments')
     group.add_argument('platform',      help      = 'Token for target platform')
@@ -66,25 +69,39 @@ def command_init(args):
 
 def command_build(args):
     config = load_config_file_with_args(args)
-    make_dep_image(config, args.platform)
+    dockerfile = make_deps_dockerfile(config, args.platform)
+    if args.print_only:
+        print dockerfile
+    else:
+        make_dep_image(config, args.platform, dockerfile)
 
 def command_install_dep(args):
-    platform, repo, branch = args
     check_sysroot()
-    url = make_archive_url(repo, branch)
+    url = make_archive_url(args.repo, args.branch)
     input = urllib2.urlopen(url)
-    output = open('dep.tar.gz', 'w')
+    output = open('dep.zip', 'wr')
     buf = ''
     while True:
         buf = input.read(800)
-        if (len(buf) > 0):
-            output.write(buf)
-        else:
+        output.write(buf)
+        output.flush()
+        if (len(buf) == 0):
             break
+    output.close()
 
-    tar.open('dep.tar.gz', 'r:gz').extract_all('dep')
-    recipe = find_recipe(platform, repo)
-    subprocess.Popen([recipe], cwd = './dep')
+    assert os.path.isfile('dep.zip')
+    assert zipfile.is_zipfile('dep.zip')
+
+    zipfile.ZipFile('dep.zip', 'r').extractall()
+    recipe = find_recipe(args.platform, args.repo)
+    p = subprocess.Popen([recipe], cwd = get_dep_dir_name(args.repo, args.branch))
+    p.communicate('')
+    if p.returncode != 0:
+        print """
+
+    FAILURE: Recipe returned error code {0}.
+        """.format(p.returncode)
+        sys.exit(1)
 
 def install_deps_platform(platform, items):
     for i in range(len(items)):
@@ -171,7 +188,7 @@ def get_max_key_length(config):
     return length
 
 def make_archive_url(repo, branch):
-    '{0}/archive/{1}.tar.gz'.format(repo, branch)
+    return 'https://github.com/{0}/archive/{1}.zip'.format(repo, branch)
 
 def find_recipe(platform, repo):
     repo = repo.replace('/', '-')
@@ -181,17 +198,19 @@ def find_recipe(platform, repo):
     xs = [
         local_recipe_path   + '/' + repo_with_platform,
         local_recipe_path   + '/' + repo,
+        local_recipe_path   + '/default',
         builtin_recipe_path + '/' + repo_with_platform,
-        builtin_recipe_path + '/' + repo
+        builtin_recipe_path + '/' + repo,
+        builtin_recipe_path + '/default',
     ]
     for x in xs:
         if os.path.isfile(x):
             return x
-    raise ValueError('Unable to find cppdock recipe:' + repo_with_platform)
+    raise ValueError('Unable to find cppdock recipe: ' + repo_with_platform)
 
 def check_sysroot():
-    if not os.path.isdir('opt/sysroot'):
-        raise ValueError('Sysroot directory is missing: /opt/sysroot')
+    if not os.path.isdir('/opt/sysroot/'):
+        raise ValueError('Sysroot directory is missing: /opt/sysroot/')
 
 def get_arg(args, i):
     next(iter(args[i:i+1]), None)
@@ -200,9 +219,12 @@ def get_config_option(config, name):
     defaults = {
         'project': None,
         'cppdock': 'ricejasonf/cppdock',
-        'linux_x64': default_compiler_image,
-        'emscripten': default_compiler_image,
-        'tvossimulator': default_compiler_image
+        'compiler_linux_x64':     'ricejasonf/emscripten',
+        'compiler_emscripten':    'ricejasonf/emscripten',
+        'compiler_tvossimulator': 'ricejasonf/emscripten',
+        'platform_linux_x64':     'ricejasonf/cppdock:linux_x64',
+        'platform_emscripten':    'ricejasonf/cppdock:emscripten',
+        'platform_tvossimulator': 'ricejasonf/cppdock:tvossimulator',
     }
     try:
         value = config.get('cppdock', name)
@@ -213,49 +235,63 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_dep_image(config, platform):
-    cppdock_image = "{0}:{1}".format(
-        get_config_option(config, 'cppdock'),
-        platform
-    )
-    compiler_image = get_config_option(config, platform)
+def make_dep_image(config, platform, dockerfile):
     tag_name = "{0}_deps:{1}".format(
         get_config_option(config, 'project'),
         platform
     )
-    dockerfile = make_deps_dockerfile(config, cppdock_image, compiler_image, platform)
-    #p = subprocess.Popen(['docker', '-t ' + tag_name, '-'], stdin=subprocess.PIPE)
-    p = subprocess.Popen(['cat'], stdin=subprocess.PIPE)
+    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '-'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
-    print """
+    if p.returncode == 0:
+        print """
 
-Finished building {0}.
-    """.format(tag_name)
+    Finished building {0}.
+        """.format(tag_name)
+    else:
+        print """
 
-def make_deps_dockerfile(config, cppdock_image, compiler_image, platform):
-    run_deps = string.join(["""
-    RUN cppdock install_dep {0} {1} {2}""".format(x, y, z) for x, y, z in get_deps_from_config(config, platform)])
+    FAILURE: Build of {0} FAILED.
+        """.format(tag_name)
+
+def make_deps_dockerfile(config, platform):
+    cppdock_image  = get_config_option(config, 'platform_' + platform)
+    compiler_image = get_config_option(config, 'compiler_' + platform)
+    deps = get_deps_from_config(config, platform)
+    deps_stages = string.join([make_deps_stage(compiler_image, x, y, z) for x, y, z in deps])
+    deps_imports = string.join([make_deps_import(x, y) for x, y, z in deps])
 
     return """
 FROM {0} as platform
-FROM {1} as build
-    COPY --from=platform /opt/sdk/ /opt/sdk
+{1}
+FROM ubuntu:artful
+    COPY --from=platform /usr/local/ /usr/local
+    COPY --from=platform /opt/toolchain.cmake /opt/toolchain.cmake
+{2}
+""".format(cppdock_image, deps_stages, deps_imports)
+
+def make_deps_stage(compiler_image, platform, branch, repo):
+    return """
+FROM {0} as build_{2}_{1}
+    COPY --from=platform /usr/local/ /usr/local
     COPY --from=platform /opt/sysroot/ /opt/sysroot
     COPY --from=platform /opt/toolchain.cmake /opt/toolchain.cmake
     COPY --from=platform /usr/local/bin/cppdock /usr/local/bin/cppdock
+    COPY --from=platform /root/.cppdock_recipes/ /root/.cppdock_recipes
+    WORKDIR /usr/local/src
+    RUN cppdock install_dep {1} {2} {3}
+""".format(compiler_image, platform, branch, repo)
 
-    WORKDIR /usr/local/src{2}
-
-FROM ubuntu:artful
-    COPY --from=build /opt/sdk/ /opt/sdk
-    COPY --from=build /opt/sysroot/ /opt/sysroot
-    COPY --from=build /opt/toolchain.cmake /opt/toolchain.cmake
-    """.format(cppdock_image, compiler_image, run_deps)
+def make_deps_import(platform, branch):
+    return """
+    COPY --from=build_{1}_{0} /opt/install/ /opt/sysroot""".format(platform, branch)
 
 def get_deps_from_config(config, platform):
     if not config.has_section(platform):
         raise ValueError('Platform is not specified in cppdock ini file')
     return [(platform, item[1][0:40], item[0]) for item in config.items(platform)]
+
+def get_dep_dir_name(repo, branch):
+    return '{0}-{1}'.format(repo.split('/').pop(), branch)
         
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])

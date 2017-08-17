@@ -2,4 +2,6 @@ FROM ubuntu:artful
 
 RUN  ln -s /usr/local /opt/sysroot
 
+COPY cppdock /usr/local/bin
+COPY recipes/ /root/.cppdock_recipes
 COPY toolchain/linux_x64.cmake /opt/toolchain.cmake
