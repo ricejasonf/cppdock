@@ -6,9 +6,13 @@
 
 ## Overview
 
-###Lock Library Dependencies to Specific Revisions Automatically
+CppDock is just a tiny python script that uses a config file to specify project specific values and platform specific dependencies.
 
-In a local cppdock.ini file you can specify repos of libraries and cppdock automatically sets the SHA of the revision so there are unexpected changes.
+In the simple my_app example, running `cppdock build linux_x64` will create a Docker image called `my_app_deps:linux_64`.
+
+### Lock Library Dependencies to Specific Revisions Automatically
+
+In a local `cppdock.ini` file you can specify repos of libraries and cppdock automatically sets the SHA of the revision so there are no unexpected changes.
 
 ```ini
 [linux_x64]
@@ -32,7 +36,7 @@ The great thing about this is that the builds for each library are cached by Doc
 
 This also creates a more disciplined approach to dependency management that doesn't rely on third parties creating release tags.
 
-###Custom Recipes
+### Custom Recipes
 
 Recipes are just bash scripts that are run in a Docker container.
 
@@ -65,7 +69,7 @@ As you can see a platform specific recipe is the first in the order of resolutio
 
 Note that every build should install to `/opt/install`.
 
-###Custom Compilers and SDKs
+### Custom Compilers and SDKs
 
 CppDock is built specifically for cross-compiling and it supports custom build environments by letting the user specify the Docker image to use for each.
 
@@ -84,3 +88,5 @@ kvasir-io-mpl = development
 `mydroid_sdk` and `some_gcc_compiler` are just Docker images for the build environment and the compiler respectively.
 
 The "platform" image should have any build tools required such as CMake or Python as well as an `/opt/toolchain.cmake` if you are relying on any default CMake recipes.
+
+All desired artifacts other than the toolchain file must be installed to `/user/local` to be usable in the build environment.
