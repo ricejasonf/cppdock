@@ -89,4 +89,4 @@ kvasir-io-mpl = development
 
 The "platform" image should have any build tools required such as CMake or Python as well as an `/opt/toolchain.cmake` if you are relying on any default CMake recipes.
 
-All desired artifacts other than the toolchain file must be installed to `/user/local` to be usable in the build environment.
+All desired artifacts from the "platform" other than the toolchain file must be installed to `/user/local` to be usable in the combined build environment.
