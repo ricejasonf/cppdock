@@ -218,14 +218,14 @@ def get_arg(args, i):
 def get_config_option(config, name):
     defaults = {
         'project': None,
-        'cppdock': 'ricejasonf/cppdock',
-        'compiler_linux_x64':     'ricejasonf/emscripten',
-        'compiler_emscripten':    'ricejasonf/emscripten',
-        'compiler_tvossimulator': 'ricejasonf/emscripten',
+        'compiler_linux_x64':     'ricejasonf/emscripten:1.37.19',
+        'compiler_emscripten':    'ricejasonf/emscripten:1.37.19',
+        'compiler_tvossimulator': 'ricejasonf/emscripten:1.37.19',
         'platform_linux_x64':     'ricejasonf/cppdock:linux_x64',
         'platform_emscripten':    'ricejasonf/cppdock:emscripten',
         'platform_tvossimulator': 'ricejasonf/cppdock:tvossimulator',
     }
+    value = None
     try:
         value = config.get('cppdock', name)
     except:
