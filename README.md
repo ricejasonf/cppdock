@@ -1,12 +1,12 @@
 # CppDock
 
->Manage and build C++ dependencies in a Docker container
+>Manage and build C++ dependencies within a Docker container
 >
 >This project is a work in progress.
 
 ## Overview
 
-CppDock is just a tiny python script that uses a config file to specify project specific values and platform specific dependencies.
+CppDock is just a tiny python script that uses a config file to specify project specific values and platform specific dependencies based on GitHub.
 
 In the simple my_app example, running `cppdock build linux_x64` will create a Docker image called `my_app_deps:linux_64`.
 
