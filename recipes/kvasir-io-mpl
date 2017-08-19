@@ -1,3 +1,4 @@
 #!/bin/bash
 
-cp -r mpl/src/* /opt/install/include
+mkdir -p /opt/install/include
+cp -r src/* /opt/install/include

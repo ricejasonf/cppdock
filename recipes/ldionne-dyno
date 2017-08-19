@@ -1,0 +1,10 @@
+#!/bin/bash
+
+# TODO
+# Dyno depends on Hana so there needs to be a way of
+# installing the dependency to the sysroot of the current build.
+#
+# This also means knowing what the dependency is before hand.
+
+mkdir -p /opt/install/include
+cp -r include/* /opt/install/include

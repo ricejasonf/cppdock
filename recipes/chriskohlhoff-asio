@@ -1,4 +1,5 @@
 #!/bin/bash
 
-cp asio/asio/include/asio.hpp /opt/install/include
-cp -r asio/asio/include/asio /opt/install/include
+mkdir -p /opt/install/include
+cp asio/include/asio.hpp /opt/install/include
+cp -r asio/include/asio /opt/install/include
