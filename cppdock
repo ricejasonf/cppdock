@@ -120,7 +120,7 @@ def load_config_file(ini_file_path):
         if section == 'cppdock':
             continue
         for item in config.items(section):
-            lock_item(config, 'linux_x64', item)
+            lock_item(config, section, item)
     write_config_file(config, ini_file_path)
     return config
 
