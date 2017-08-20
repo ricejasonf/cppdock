@@ -114,6 +114,9 @@ def load_config_file_with_args(args):
     return load_config_file(ini_file_path)
 
 def load_config_file(ini_file_path):
+    if not os.path.isfile(ini_file_path):
+        print ini_file_path
+        raise ValueError('Config file not found.')
     config = PrettyConfigParser()
     config.read(ini_file_path)
     for section in config.sections():
@@ -218,9 +221,9 @@ def get_arg(args, i):
 def get_config_option(config, name):
     defaults = {
         'project': None,
-        'compiler_linux_x64':     'ricejasonf/emscripten:1.37.19',
-        'compiler_emscripten':    'ricejasonf/emscripten:1.37.19',
-        'compiler_tvossimulator': 'ricejasonf/emscripten:1.37.19',
+        'compiler_linux_x64':     'ricejasonf/emscripten_fastcomp:1.37.19',
+        'compiler_emscripten':    'ricejasonf/emscripten_fastcomp:1.37.19',
+        'compiler_tvossimulator': 'ricejasonf/emscripten_fastcomp:1.37.19',
         'platform_linux_x64':     'ricejasonf/cppdock:linux_x64',
         'platform_emscripten':    'ricejasonf/cppdock:emscripten',
         'platform_tvossimulator': 'ricejasonf/cppdock:tvossimulator',
@@ -236,7 +239,7 @@ def get_config_option(config, name):
     return value
 
 def make_dep_image(config, platform, dockerfile):
-    tag_name = "{0}_deps:{1}".format(
+    tag_name = "{0}_build:{1}".format(
         get_config_option(config, 'project'),
         platform
     )
@@ -255,31 +258,22 @@ def make_dep_image(config, platform, dockerfile):
 
 def make_deps_dockerfile(config, platform):
     cppdock_image  = get_config_option(config, 'platform_' + platform)
-    compiler_image = get_config_option(config, 'compiler_' + platform)
     deps = get_deps_from_config(config, platform)
-    deps_stages = string.join([make_deps_stage(compiler_image, x, y, z) for x, y, z in deps])
+    deps_stages = string.join([make_deps_stage(cppdock_image, x, y, z) for x, y, z in deps])
     deps_imports = string.join([make_deps_import(x, y) for x, y, z in deps])
 
     return """
-FROM {0} as platform
-{1}
-FROM ubuntu:artful
-    COPY --from=platform /usr/local/ /usr/local
-    COPY --from=platform /opt/toolchain.cmake /opt/toolchain.cmake
+{0}
+FROM {1}
 {2}
-""".format(cppdock_image, deps_stages, deps_imports)
+""".format(deps_stages, cppdock_image, deps_imports)
 
-def make_deps_stage(compiler_image, platform, branch, repo):
+def make_deps_stage(cppdock_image, platform, branch, repo):
     return """
 FROM {0} as build_{2}_{1}
-    COPY --from=platform /usr/local/ /usr/local
-    COPY --from=platform /opt/sysroot/ /opt/sysroot
-    COPY --from=platform /opt/toolchain.cmake /opt/toolchain.cmake
-    COPY --from=platform /usr/local/bin/cppdock /usr/local/bin/cppdock
-    COPY --from=platform /root/.cppdock_recipes/ /root/.cppdock_recipes
     WORKDIR /usr/local/src
     RUN cppdock install_dep {1} {2} {3}
-""".format(compiler_image, platform, branch, repo)
+""".format(cppdock_image, platform, branch, repo)
 
 def make_deps_import(platform, branch):
     return """

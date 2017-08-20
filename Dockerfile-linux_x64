@@ -1,7 +1,10 @@
-FROM ubuntu:artful
+FROM ricejasonf/emscripten_fastcomp:1.37.19
 
-RUN  ln -s /usr/local /opt/sysroot
+  RUN apt-get update && apt-get -yq install \
+    cmake python
 
-COPY cppdock /usr/local/bin
-COPY recipes/ /root/.cppdock_recipes
-COPY toolchain/linux_x64.cmake /opt/toolchain.cmake
+  RUN  ln -s /usr/local /opt/sysroot
+
+  COPY cppdock /usr/local/bin
+  COPY recipes/ /root/.cppdock_recipes
+  COPY toolchain/linux_x64.cmake /opt/toolchain.cmake

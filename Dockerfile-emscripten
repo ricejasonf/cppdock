@@ -1,7 +1,15 @@
-FROM ubuntu:artful
+FROM ricejasonf/emscripten:1.37.19 as sdk
 
-RUN  ln -s /usr/local/src/emscripten/system /opt/sysroot \
+FROM ricejasonf/emscripten_fastcomp:1.37.19
 
-COPY cppdock /usr/local/bin
-COPY recipes/ /root/.cppdock_recipes
-COPY toolchain/emscripten.cmake /opt/toolchain.cmake
+  RUN apt-get update && apt-get -yq install \
+    default-jre-headless cmake python
+
+  COPY --from=sdk /usr/local/ /usr/local
+  COPY --from=sdk /root/ /root
+
+  COPY cppdock /usr/local/bin
+  COPY recipes/ /root/.cppdock_recipes
+  COPY toolchain/emscripten.cmake /opt/toolchain.cmake
+
+  RUN ln -s /usr/local/src/emscripten/system /opt/sysroot
