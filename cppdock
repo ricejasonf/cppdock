@@ -155,6 +155,8 @@ def normalize_repo_name(name):
 def normalize_branch_name(name):
     if len(name) == 0 or name == 'HEAD':
         return 'HEAD'
+    elif name.startswith('refs/'):
+        return name
     else:
         return "refs/heads/" + name
 
