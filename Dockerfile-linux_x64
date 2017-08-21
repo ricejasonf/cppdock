@@ -1,7 +1,9 @@
 FROM ricejasonf/emscripten_fastcomp:1.37.19
 
   RUN apt-get update && apt-get -yq install \
-    cmake python
+    cmake python bash-completion vim \
+    && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
+    && echo 'set hlsearch' >> /root/.vimrc
 
   RUN  ln -s /usr/local /opt/sysroot
 

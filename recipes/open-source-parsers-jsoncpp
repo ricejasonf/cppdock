@@ -8,5 +8,4 @@ mkdir build && cd build \
   -DJSONCPP_WITH_TESTS=OFF \
   -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF\
   .. \
-&& make install \
-&& mv /opt/install/include/json /opt/install/include/jsoncpp
+&& make install
