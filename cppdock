@@ -94,7 +94,8 @@ def command_install_dep(args):
 
     zipfile.ZipFile('dep.zip', 'r').extractall()
     recipe = find_recipe(args.platform, args.repo)
-    p = subprocess.Popen([recipe], cwd = get_dep_dir_name(args.repo, args.branch))
+    cwd_dir = [x for x in os.listdir('.') if x.endswith(args.branch)][0]
+    p = subprocess.Popen([recipe], cwd = cwd_dir)
     p.communicate('')
     if p.returncode != 0:
         print """
@@ -286,8 +287,9 @@ def get_deps_from_config(config, platform):
         raise ValueError('Platform is not specified in cppdock ini file')
     return [(platform, item[1][0:40], item[0]) for item in config.items(platform)]
 
-def get_dep_dir_name(repo, branch):
-    return '{0}-{1}'.format(repo.split('/').pop(), branch)
+#
+#def get_dep_dir_name(repo, branch):
+#    return '{0}-{1}'.format(repo.split('/').pop(), branch)
         
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
