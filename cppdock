@@ -198,7 +198,7 @@ def make_archive_url(repo, branch):
 
 def find_recipe(platform, repo):
     repo = repo.replace('/', '-')
-    local_recipe_path = root_path + '/cppdock_recipes'
+    local_recipe_path = '/opt/cppdock_recipes'
     builtin_recipe_path = os.path.expanduser('~') + '/.cppdock_recipes'
     repo_with_platform = repo + '-' + platform
     xs = [
@@ -246,7 +246,7 @@ def make_dep_image(config, platform, dockerfile):
         get_config_option(config, 'project'),
         platform
     )
-    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '-'], stdin=subprocess.PIPE)
+    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
     if p.returncode == 0:
         print """
@@ -258,6 +258,7 @@ def make_dep_image(config, platform, dockerfile):
 
     FAILURE: Build of {0} FAILED.
         """.format(tag_name)
+        sys.exit(1)
 
 def make_deps_dockerfile(config, platform):
     cppdock_image  = get_config_option(config, 'platform_' + platform)
@@ -272,11 +273,16 @@ FROM {1}
 """.format(deps_stages, cppdock_image, deps_imports)
 
 def make_deps_stage(cppdock_image, platform, branch, repo):
+    copy_recipes_term = ""
+    if os.path.isdir(root_path + '/cppdock_recipes'):
+        copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/" 
+
     return """
 FROM {0} as build_{2}_{1}
+    {4}
     WORKDIR /usr/local/src
     RUN cppdock install_dep {1} {2} {3}
-""".format(cppdock_image, platform, branch, repo)
+""".format(cppdock_image, platform, branch, repo, copy_recipes_term)
 
 def make_deps_import(platform, branch):
     return """
