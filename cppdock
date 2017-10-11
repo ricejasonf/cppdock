@@ -69,7 +69,8 @@ def command_init(args):
 
 def command_build(args):
     config = load_config_file_with_args(args)
-    dockerfile = make_deps_dockerfile(config, args.platform)
+    #dockerfile = make_deps_dockerfile(config, args.platform)
+    dockerfile = make_deps_dockerfile_stageless(config, args.platform)
     if args.print_only:
         print dockerfile
     else:
@@ -272,6 +273,20 @@ FROM {1}
 {2}
 """.format(deps_stages, cppdock_image, deps_imports)
 
+def make_deps_dockerfile_stageless(config, platform):
+    cppdock_image  = get_config_option(config, 'platform_' + platform)
+    deps = get_deps_from_config(config, platform)
+    deps_stages = string.join([make_install_dep(x, y, z) for x, y, z in deps])
+
+    return """
+FROM {0} as build_all
+{1}
+
+FROM {2}
+
+    COPY --from=build_all /opt/install /opt/sysroot
+""".format(cppdock_image, deps_stages, cppdock_image)
+
 def make_deps_stage(cppdock_image, platform, branch, repo):
     copy_recipes_term = ""
     if os.path.isdir(root_path + '/cppdock_recipes'):
@@ -283,6 +298,10 @@ FROM {0} as build_{2}_{1}
     WORKDIR /usr/local/src
     RUN cppdock install_dep {1} {2} {3}
 """.format(cppdock_image, platform, branch, repo, copy_recipes_term)
+
+def make_install_dep(platform, branch, repo):
+    return """
+    RUN cppdock install_dep {0} {1} {2}""".format(platform, branch, repo)
 
 def make_deps_import(platform, branch):
     return """
