@@ -1,0 +1,9 @@
+#!/bin/bash
+
+export PATH=$PATH:/usr/local/src/emscripten
+apt-get update && apt-get install -yq libtool autoconf
+chmod u+x ./autogen.sh
+chmod u+x ./dist-build/emscripten.sh
+./autogen.sh
+./dist-build/emscripten.sh --standard
+cp -r libsodium-js/* /opt/install/
