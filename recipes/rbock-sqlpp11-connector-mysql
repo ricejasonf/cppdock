@@ -1,0 +1,14 @@
+#!/bin/bash
+
+mkdir build && cd build \
+&& cmake \
+    -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
+    -DCMAKE_INSTALL_PREFIX=/opt/install \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DENABLE_TESTS=Off \
+    -DSQLPP11_INCLUDE_DIR=/opt/install/include \
+    -DDATE_INCLUDE_DIR=/opt/install/include/date \
+    -DMYSQL_INCLUDE_DIR=/opt/install/include/mariadb \
+    -DUSE_MARIADB=1 \
+    .. \
+&& make install

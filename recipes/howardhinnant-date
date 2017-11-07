@@ -1,0 +1,4 @@
+#!/bin/bash
+
+mkdir -p /opt/install/include
+cp -r include/* /opt/install/include
