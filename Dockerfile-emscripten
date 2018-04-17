@@ -1,18 +1,7 @@
-FROM ricejasonf/emscripten:1.37.19 as sdk
-
-FROM ricejasonf/emscripten_fastcomp:1.37.19
-
-  RUN apt-get update && apt-get -yq install \
-    default-jre-headless cmake python bash-completion vim \
-    && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
-    && echo 'set hlsearch' >> /root/.vimrc \
-    && mkdir /opt/install
-
-  COPY --from=sdk /usr/local/ /usr/local
-  COPY --from=sdk /root/ /root
-
+ARG EMSCRIPTEN_TAG=1.37.36
+FROM ricejasonf/emscripten:$EMSCRIPTEN_TAG
   COPY cppdock /usr/local/bin
   COPY recipes/ /root/.cppdock_recipes
   COPY toolchain/emscripten.cmake /opt/toolchain.cmake
 
-  RUN ln -s /usr/local/src/emscripten/system /opt/sysroot
+  RUN ln -s /usr/local/src/emscripten/system /opt/sysroot && mkdir /opt/install
