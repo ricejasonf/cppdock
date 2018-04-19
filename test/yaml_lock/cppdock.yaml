@@ -17,6 +17,9 @@ platforms:
       - name: boostorg/hana
         tag: develop
         revision: d9da8776aa1142c0f92a38d49829ae5c3e86c7bc
+        # type: git  github implied
+
+        # add docker image dep
 
 ###
 ## 
