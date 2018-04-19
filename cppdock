@@ -8,10 +8,12 @@ import string
 import sys
 import urllib2
 import warnings
+import yaml
 import zipfile
 
 root_path = os.path.abspath('.')
-default_ini_file_path = root_path + '/cppdock.ini'
+default_yaml_file_path = root_path + '/cppdock.yaml'
+default_dep_path = "https://github.com/" 
 
 def parse_args_command(args):
     parser = argparse.ArgumentParser(add_help=False)
@@ -24,16 +26,16 @@ def parse_args_command(args):
 
 def parse_args_init(args):
     parser = argparse.ArgumentParser(prog='cppdock init')
-    parser.add_argument('-f', '--file', dest      = 'ini_file_path',
-                                        default   = default_ini_file_path,
-                                        help      = 'Specify path to ini file')
+    parser.add_argument('-f', '--file', dest      = 'yaml_file_path',
+                                        default   = default_yaml_file_path,
+                                        help      = 'Specify path to yaml file')
     return parser.parse_args(args)
 
 def parse_args_build(args):
     parser = argparse.ArgumentParser(prog='cppdock build')
-    parser.add_argument('-f', '--file', dest      = 'ini_file_path',
-                                        default   = default_ini_file_path,
-                                        help      = 'Specify path to ini file')
+    parser.add_argument('-f', '--file', dest      = 'yaml_file_path',
+                                        default   = default_yaml_file_path,
+                                        help      = 'Specify path to yaml file')
 
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
@@ -112,47 +114,55 @@ def install_deps_platform(platform, items):
         install_dep(i, platform, repo, branch)
 
 def load_config_file_with_args(args):
-    ini_file_path = args.ini_file_path
-    return load_config_file(ini_file_path)
+    yaml_file_path = args.yaml_file_path
+    return load_config_file(yaml_file_path)
 
-def load_config_file(ini_file_path):
-    if not os.path.isfile(ini_file_path):
-        print ini_file_path
+def load_config_file(yaml_file_path):
+    if not os.path.isfile(yaml_file_path):
+        print yaml_file_path
         raise ValueError('Config file not found.')
-    config = PrettyConfigParser()
-    config.read(ini_file_path)
-    for section in config.sections():
-        if section == 'cppdock':
+
+    stream = file(yaml_file_path, 'r')
+    config = yaml.load(stream)
+
+    for sections in config:
+        if sections == 'cppdock':
             continue
-        for item in config.items(section):
-            lock_item(config, section, item)
-    write_config_file(config, ini_file_path)
+        for platforms in config[sections]:
+            for item in platforms['deps']:
+               item = lock_item_yaml(item)
+
+    write_config_file(config, yaml_file_path)
     return config
 
-def write_config_file(config, ini_file_path):
+def write_config_file(config, yaml_file_path):
     try:
-        config.write(open(ini_file_path, 'wb'))
+        yaml.dump(config, open(yaml_file_path, 'wb'), default_flow_style=False)
     except:
-        warnings.warn('WARNING: Unable to write to ini file')
+        warnings.warn('WARNING: Unable to write to yaml file')
 
-def lock_item(config, section, item):
-    repo, branch = item
-    config.set(section, repo, get_current_sha_with_comment(item))
+def lock_item_yaml(item):
+    current_sha = get_current_sha_with_comment(item)
+    item.update(revision = current_sha)
+
+    return item
 
 def get_current_sha_with_comment(item):
-    repo, branch = item
-    if len(branch) >= 40:
-        return branch
+    repo = item['name']
+    tag = item['tag']
+
+    if 'revision' in item:
+        return item['revision']
     else:
-        branch = normalize_branch_name(branch)
+        tag = normalize_branch_name(tag)
         lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
         for line in lines:
-            if line.endswith(branch):
-                return line[0:40] + ' # ' + (item[1] or 'HEAD')
+            if line.endswith(tag):
+                return line[0:40]
         raise ValueError("Unable to get SHA from remote git repository")
 
 def normalize_repo_name(name):
-    return "https://github.com/" + name;
+    return default_dep_path + name;
 
 def normalize_branch_name(name):
     if len(name) == 0 or name == 'HEAD':
@@ -164,26 +174,6 @@ def normalize_branch_name(name):
 
 def is_sha(name):
     return len(name) == 40
-
-class PrettyConfigParser(ConfigParser.RawConfigParser):
-    def write(self, fp):
-        max_key_length = get_max_key_length(self)
-        if self._defaults:
-            fp.write("[%s]\n" % DEFAULTSECT)
-            for (key, value) in self._defaults.items():
-                fp.write("%s = %s\n" % (key, str(value).replace('\n', '\n\t')))
-            fp.write("\n")
-        for section in self._sections:
-            fp.write("[%s]\n" % section)
-            for (key, value) in self._sections[section].items():
-                if key == "__name__":
-                    continue
-                if (value is not None) or (self._optcre == self.OPTCRE):
-                    equal_left_padding = ' ' * (max_key_length - len(key))
-                    key = " = ".join((key + equal_left_padding, str(value).replace('\n', '\n\t')))
-
-                fp.write("%s\n" % (key))
-            fp.write("\n")
 
 def get_max_key_length(config):
     length = 0
@@ -233,18 +223,16 @@ def get_config_option(config, name):
         'platform_tvossimulator': 'ricejasonf/cppdock:tvossimulator',
     }
     value = None
-    try:
-        value = config.get('cppdock', name)
-    except:
-        if name in defaults:
-            value = defaults[name]
+
+    if name in defaults:
+        value = defaults[name]
     if value == None:
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
 def make_dep_image(config, platform, dockerfile):
     tag_name = "{0}_build:{1}".format(
-        get_config_option(config, 'project'),
+        config['cppdock']['name'],
         platform
     )
     p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
@@ -308,9 +296,13 @@ def make_deps_import(platform, branch):
     COPY --from=build_{1}_{0} /opt/install/ /opt/sysroot""".format(platform, branch)
 
 def get_deps_from_config(config, platform):
-    if not config.has_section(platform):
-        raise ValueError('Platform is not specified in cppdock ini file')
-    return [(platform, item[1][0:40], item[0]) for item in config.items(platform)]
+    platform_info = config['platforms']
+
+    for platforms in platform_info:
+        if platforms['type'] == platform:
+            return [(platform, item['revision'],  item['name']) for item in platforms['deps']]
+    
+    raise ValueError('Platform is not specified in cppdock yaml file')
 
 #
 #def get_dep_dir_name(repo, branch):

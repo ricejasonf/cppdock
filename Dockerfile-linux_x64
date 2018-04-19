@@ -5,6 +5,7 @@ FROM ricejasonf/emscripten_fastcomp:1.37.36
     && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
     && echo 'set hlsearch' >> /root/.vimrc \
     && mkdir /opt/install
+    && mkdir /opt/build
 
   RUN  ln -s /usr/local /opt/sysroot
 
