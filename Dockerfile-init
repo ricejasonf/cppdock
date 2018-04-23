@@ -1,0 +1,14 @@
+FROM ubuntu:bionic
+
+RUN  apt-get update \
+  && apt-get -yq install \
+      python python-pip cmake git autoconf bash-completion vim \
+  && pip install pyyaml==3.12 \
+  && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
+  && echo 'set hlsearch' >> /root/.vimrc 
+
+COPY cppdock /usr/local/bin
+COPY recipes/ /root/.cppdock_recipes
+
+WORKDIR /opt/build
+CMD cppdock init -f /opt/src/cppdock.yaml
