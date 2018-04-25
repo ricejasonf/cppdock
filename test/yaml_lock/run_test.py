@@ -1,12 +1,12 @@
 # TODO
 # call `cppdock init` in this working dir
-# test that yaml file is the same except for specifying revisions in each dep
+# test that json file is the same except for specifying revisions in each dep
 # The dep with the hardcoded revision should NOT change
 
 import os
 import subprocess
 import sys
-import yaml
+import json
 
 expected_revision_boosthana = 'd9da8776aa1142c0f92a38d49829ae5c3e86c7bc'
 
@@ -19,8 +19,8 @@ def start():
         FAILURE
         """
 
-    stream = file('cppdock.yaml', 'r')
-    config = yaml.load(stream)
+    stream = file('cppdock.json', 'r')
+    config = json.load(stream)
 
     result_revision_boosthana = config['platforms'][1]['deps'][1]['revision']
     if not result_revision_boosthana == expected_revision_boosthana:
