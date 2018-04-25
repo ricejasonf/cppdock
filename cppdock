@@ -2,17 +2,17 @@
 
 import ConfigParser
 import argparse
+import json
 import os
 import subprocess
 import string
 import sys
 import urllib2
 import warnings
-import yaml
 import zipfile
 
 root_path = os.path.abspath('.')
-default_yaml_file_path = root_path + '/cppdock.yaml'
+default_json_file_path = root_path + '/cppdock.json'
 build_init_image = 'ricejasonf/cppdock:latest'
 default_dep_path = "https://github.com/" 
 
@@ -27,21 +27,17 @@ def parse_args_command(args):
 
 def parse_args_init(args):
     parser = argparse.ArgumentParser(prog='cppdock init')
-    parser.add_argument('-f', '--file', dest      = 'yaml_file_path',
-                                        default   = default_yaml_file_path,
-                                        help      = 'Specify path to yaml file')
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
 
-    parser.add_argument('--indirect',   dest      = 'indirect',
-                                        action    = 'store_true',
-                                        help      = 'Use docker to init')
- 
     return parser.parse_args(args)
 
 def parse_args_build(args):
     parser = argparse.ArgumentParser(prog='cppdock build')
-    parser.add_argument('-f', '--file', dest      = 'yaml_file_path',
-                                        default   = default_yaml_file_path,
-                                        help      = 'Specify path to yaml file')
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
 
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
@@ -73,13 +69,10 @@ def dispatch(command_args, cli_args):
         commands[command][0](args)
 
 def command_init(args):
-    if args.indirect:
-        indirect_load_config_file(args)
-    else:
-        load_config_file_with_args(args)
+    load_config_file_with_args(args)
 
 def command_build(args):
-    config = indirect_load_config_file(args)
+    config = load_config_file_with_args(args)
 
     #dockerfile = make_deps_dockerfile(config, args.platform)
     dockerfile = make_deps_dockerfile_stageless(config, args.platform)
@@ -123,54 +116,36 @@ def install_deps_platform(platform, items):
         branch = branch[0:40]
         install_dep(i, platform, repo, branch)
 
-def indirect_load_config_file(args):
-    yaml_file = args.yaml_file_path[:-13]
-    the_path = root_path
-
-    if not yaml_file[0] is '/':
-        yaml_file = '/' + yaml_file
-
-    if not yaml_file in root_path:
-        the_path += yaml_file
-
-    p = subprocess.Popen(['docker', 'run', '--rm', '--volume='+the_path+':/opt/src/', build_init_image], stdin=subprocess.PIPE)
-    out, err = p.communicate('')
-    if p.returncode != 0:
-        print """
-        FAILURE
-        """
-
-    return load_config_file_with_args(args)
-
 def load_config_file_with_args(args):
-    yaml_file_path = args.yaml_file_path
-    return load_config_file(yaml_file_path)
+    json_file_path = args.json_file_path
+    return load_config_file(json_file_path)
 
-def load_config_file(yaml_file_path):
-    if not os.path.isfile(yaml_file_path):
-        print yaml_file_path
+def load_config_file(json_file_path):
+    import json
+    if not os.path.isfile(json_file_path):
+        print json_file_path
         raise ValueError('Config file not found.')
 
-    stream = file(yaml_file_path, 'r')
-    config = yaml.load(stream)
+    stream = file(json_file_path, 'r')
+    config = json.load(stream)
 
     for sections in config:
         if sections == 'cppdock':
             continue
         for platforms in config[sections]:
             for item in platforms['deps']:
-               item = lock_item_yaml(item)
+               item = lock_item_json(item)
 
-    write_config_file(config, yaml_file_path)
+    write_config_file(config, json_file_path)
     return config
 
-def write_config_file(config, yaml_file_path):
+def write_config_file(config, json_file_path):
     try:
-        yaml.dump(config, open(yaml_file_path, 'wb'), default_flow_style=False)
+        json.dump(config, open(json_file_path, 'wb'), indent=2)
     except:
-        warnings.warn('WARNING: Unable to write to yaml file')
+        warnings.warn('WARNING: Unable to write to json file')
 
-def lock_item_yaml(item):
+def lock_item_json(item):
     current_sha = get_current_sha_with_comment(item)
     item.update(revision = current_sha)
 
@@ -331,7 +306,7 @@ def get_deps_from_config(config, platform):
         if platforms['type'] == platform:
             return [(platform, item['revision'],  item['name']) for item in platforms['deps']]
     
-    raise ValueError('Platform is not specified in cppdock yaml file')
+    raise ValueError('Platform is not specified in cppdock json file')
 
 #
 #def get_dep_dir_name(repo, branch):
