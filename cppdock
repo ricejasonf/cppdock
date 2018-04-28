@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 
-import ConfigParser
+from collections import OrderedDict
 import argparse
 import json
 import os
-import subprocess
 import string
+import subprocess
 import sys
 import urllib2
 import warnings
@@ -121,13 +121,12 @@ def load_config_file_with_args(args):
     return load_config_file(json_file_path)
 
 def load_config_file(json_file_path):
-    import json
     if not os.path.isfile(json_file_path):
         print json_file_path
         raise ValueError('Config file not found.')
 
     stream = file(json_file_path, 'r')
-    config = json.load(stream)
+    config = json.load(stream, object_pairs_hook=OrderedDict)
 
     for sections in config:
         if sections == 'cppdock':
@@ -141,7 +140,9 @@ def load_config_file(json_file_path):
 
 def write_config_file(config, json_file_path):
     try:
-        json.dump(config, open(json_file_path, 'wb'), indent=2)
+        with open(json_file_path, 'wb') as fh:
+            json.dump(config, fh, indent=2, separators=(',', ': '))
+            fh.write('\n')
     except:
         warnings.warn('WARNING: Unable to write to json file')
 
