@@ -1,0 +1,52 @@
+{
+  "cppdock": {
+    "name": "test_json_lock"
+  },
+  "platforms": [
+    {
+      "type": "linux_x64",
+      "name": "my_linux_x64",
+      "deps": [
+        [
+          {
+            "tag": "master",
+            "name": "ricejasonf/nbdl",
+            "revision": "1ae8497b57640cfb095efe0a3c9e0f22f3ac15a9"
+          },
+          {
+            "tag": "master",
+            "name": "ricejasonf/cppnow17_nbdl",
+            "revision": "2c0a648d4914e4753185783b441aabf569b74e0a"
+          }
+        ],
+        [
+          {
+            "tag": "develop",
+            "name": "boostorg/hana",
+            "revision": "d9da8776aa1142c0f92a38d49829ae5c3e86c7bc"
+          }
+        ]
+      ]
+    },
+    {
+      "image": "ricejasonf/cppdock:emscripten_1_37_19",
+      "type": "emscripten",
+      "deps": [
+        [
+          {
+            "tag": "develop",
+            "name": "ricejasonf/nbdl",
+            "revision": "157988d3266cc4ef84a2687b6ef9cdba992449ae"
+          }
+        ],
+        [
+          {
+            "tag": "develop",
+            "name": "boostorg/hana",
+            "revision": "d9da8776aa1142c0f92a38d49829ae5c3e86c7bc"
+          }
+        ]
+      ]
+    }
+  ]
+}
