@@ -13,7 +13,6 @@ import zipfile
 
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
-build_init_image = 'ricejasonf/cppdock:latest'
 default_dep_path = "https://github.com/" 
 
 def parse_args_command(args):
@@ -74,8 +73,8 @@ def command_init(args):
 def command_build(args):
     config = load_config_file_with_args(args)
 
-    #dockerfile = make_deps_dockerfile(config, args.platform)
-    dockerfile = make_deps_dockerfile_stageless(config, args.platform)
+    dockerfile = make_deps_dockerfile(config, args.platform)
+    #dockerfile = make_deps_dockerfile_stageless(config, args.platform)
     if args.print_only:
         print dockerfile
     else:
@@ -132,8 +131,9 @@ def load_config_file(json_file_path):
         if sections == 'cppdock':
             continue
         for platforms in config[sections]:
-            for item in platforms['deps']:
-               item = lock_item_json(item)
+            for stage in platforms['deps']:
+                for item in stage:
+                    item = lock_item_json(item)
 
     write_config_file(config, json_file_path)
     return config
@@ -257,8 +257,11 @@ def make_dep_image(config, platform, dockerfile):
 def make_deps_dockerfile(config, platform):
     cppdock_image  = get_config_option(config, 'platform_' + platform)
     deps = get_deps_from_config(config, platform)
-    deps_stages = string.join([make_deps_stage(cppdock_image, x, y, z) for x, y, z in deps])
-    deps_imports = string.join([make_deps_import(x, y) for x, y, z in deps])
+    deps_stages = ''
+    deps_imports = ''
+    for dep in deps:
+        deps_stages += string.join([make_deps_stage(cppdock_image, dep)])
+        deps_imports += make_deps_import(dep[-1][0], dep[-1][2])
 
     return """
 {0}
@@ -280,17 +283,21 @@ FROM {2}
     COPY --from=build_all /opt/install /opt/sysroot
 """.format(cppdock_image, deps_stages, cppdock_image)
 
-def make_deps_stage(cppdock_image, platform, branch, repo):
+def make_deps_stage(cppdock_image, deps):
     copy_recipes_term = ""
     if os.path.isdir(root_path + '/cppdock_recipes'):
         copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/" 
+
+    install_deps = string.join([make_install_dep(x, y, z) for x, y, z in deps])
+    branch = deps[-1][2].replace('/', '_')
+    platform = deps[-1][0]
 
     return """
 FROM {0} as build_{2}_{1}
     {4}
     WORKDIR /usr/local/src
-    RUN cppdock install_dep {1} {2} {3}
-""".format(cppdock_image, platform, branch, repo, copy_recipes_term)
+    {3}
+""".format(cppdock_image, platform, branch, install_deps, copy_recipes_term)
 
 def make_install_dep(platform, branch, repo):
     return """
@@ -298,17 +305,19 @@ def make_install_dep(platform, branch, repo):
 
 def make_deps_import(platform, branch):
     return """
-    COPY --from=build_{1}_{0} /opt/install/ /opt/sysroot""".format(platform, branch)
+    COPY --from=build_{1}_{0} /opt/install/ /opt/sysroot""".format(platform, branch.replace('/', '_'))
 
 def get_deps_from_config(config, platform):
     platform_info = config['platforms']
 
     for platforms in platform_info:
         if platforms['type'] == platform:
-            return [(platform, item['revision'],  item['name']) for item in platforms['deps']]
+            return [get_deps_stage_items(stage, platform) for stage in platforms['deps']]
     
     raise ValueError('Platform is not specified in cppdock json file')
 
+def get_deps_stage_items(deps_stage, platform):
+    return [(platform, item['revision'],  item['name']) for item in deps_stage]
 #
 #def get_dep_dir_name(repo, branch):
 #    return '{0}-{1}'.format(repo.split('/').pop(), branch)
