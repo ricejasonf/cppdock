@@ -20,6 +20,13 @@
             "name": "boostorg/hana",
             "revision": "d9da8776aa1142c0f92a38d49829ae5c3e86c7bc"
           }
+        ],
+        [
+          {
+            "tag": "latest",
+            "name": "ricejasonf/cppdock",
+            "source": "docker"
+          }
         ]
       ]
     },

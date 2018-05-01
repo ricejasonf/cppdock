@@ -155,16 +155,22 @@ def lock_item_json(item):
 def get_current_sha_with_comment(item):
     repo = item['name']
     tag = item['tag']
+    source = item.get('source')
 
     if 'revision' in item:
         return item['revision']
     else:
-        tag = normalize_branch_name(tag)
-        lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
-        for line in lines:
-            if line.endswith(tag):
-                return line[0:40]
-        raise ValueError("Unable to get SHA from remote git repository")
+        if source == 'docker':
+            line = subprocess.check_output(['docker', 'inspect', "--format='{{index .RepoDigests 0 }}'", repo + ":" + tag]).split(':')
+            return line[1][0:64]
+            raise ValueError("Unable to get SHA from docker image")
+        else:
+            tag = normalize_branch_name(tag)
+            lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
+            for line in lines:
+                if line.endswith(tag):
+                    return line[0:40]
+            raise ValueError("Unable to get SHA from remote git repository")
 
 def normalize_repo_name(name):
     return default_dep_path + name;
@@ -191,6 +197,9 @@ def get_max_key_length(config):
 
 def make_archive_url(repo, branch):
     return 'https://github.com/{0}/archive/{1}.zip'.format(repo, branch)
+
+def make_docker_image_digest(repo, branch):
+    return '{0}@sha256:{1}'.format(repo, branch)
 
 def find_recipe(platform, repo):
     repo = repo.replace('/', '-')
@@ -259,6 +268,7 @@ def make_deps_dockerfile(config, platform):
     deps = get_deps_from_config(config, platform)
     deps_stages = ''
     deps_imports = ''
+
     for dep in deps:
         deps_stages += string.join([make_deps_stage(cppdock_image, dep)])
         deps_imports += make_deps_import(dep[-1][0], dep[-1][2])
@@ -285,21 +295,35 @@ FROM {2}
 
 def make_deps_stage(cppdock_image, deps):
     copy_recipes_term = ""
+    build_image = cppdock_image
     if os.path.isdir(root_path + '/cppdock_recipes'):
         copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/" 
+
+    docker_image_digest = get_stage_docker_image_digest(deps)
 
     install_deps = string.join([make_install_dep(x, y, z) for x, y, z in deps])
     branch = deps[-1][2].replace('/', '_')
     platform = deps[-1][0]
+
+    if not docker_image_digest == None:
+        build_image = docker_image_digest
 
     return """
 FROM {0} as build_{2}_{1}
     {4}
     WORKDIR /usr/local/src
     {3}
-""".format(cppdock_image, platform, branch, install_deps, copy_recipes_term)
+""".format(build_image, platform, branch, install_deps, copy_recipes_term)
+
+def get_stage_docker_image_digest(stage):
+    for item in stage:
+        if not is_sha(item[1]):
+            return make_docker_image_digest(item[2], item[1])
+    return None
 
 def make_install_dep(platform, branch, repo):
+    if not is_sha(branch):
+        return ''
     return """
     RUN cppdock install_dep {0} {1} {2}""".format(platform, branch, repo)
 
