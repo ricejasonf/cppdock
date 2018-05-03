@@ -268,7 +268,7 @@ def get_platform_type(config, platform_name):
 
 def make_deps_dockerfile(config, platform_name):
     platform_type = get_platform_type(config, platform_name)
-    cppdock_image  = get_config_option(config, 'platform_' + platform_type)
+    cppdock_image = get_base_image(config, platform_name) or get_config_option(config, 'platform_' + platform_type)
     deps = get_deps_from_config(config, platform_name)
     deps_stages = ''
     deps_imports = ''
@@ -282,6 +282,9 @@ def make_deps_dockerfile(config, platform_name):
 FROM {1}
 {2}
 """.format(deps_stages, cppdock_image, deps_imports)
+
+def get_base_image(config, platform_name):
+    return config['platforms'][platform_name].get('base_image')
 
 def make_deps_dockerfile_stageless(config, platform):
     cppdock_image  = get_config_option(config, 'platform_' + platform)
