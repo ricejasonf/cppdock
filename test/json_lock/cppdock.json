@@ -30,7 +30,7 @@
       ]
     },
     "my_emscripten": {
-      "image": "ricejasonf/cppdock:emscripten_1_37_19",
+      "base_image": "ricejasonf/cppdock:emscripten_1_37_19",
       "type": "emscripten",
       "deps": [
         [
