@@ -22,12 +22,13 @@ def start():
     stream = file('cppdock.json', 'r')
     config = json.load(stream)
 
-    result_revision_boosthana = config['platforms'][1]['deps'][1][0]['revision']
+    result_revision_boosthana = config['platforms']['my_emscripten']['deps'][1][0]['revision']
     if not result_revision_boosthana == expected_revision_boosthana:
         raise ValueError('Boosthana locked revision changed.')
 
-    for platforms in config['platforms']:
-        for stage in platforms['deps']:
+    platforms = config['platforms'].items()
+    for platform, settings in platforms:
+        for stage in settings['deps']:
             for item in stage:
                 if 'revision' in item:
                     continue

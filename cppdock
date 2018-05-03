@@ -43,7 +43,7 @@ def parse_args_build(args):
                                         help      = 'Print Dockerfile without building')
 
     group  = parser.add_argument_group('required arguments')
-    group.add_argument('platform',      help      = 'Token for target platform')
+    group.add_argument('platform',      help      = 'Name of target platform')
 
     return parser.parse_args(args)
 
@@ -130,8 +130,8 @@ def load_config_file(json_file_path):
     for sections in config:
         if sections == 'cppdock':
             continue
-        for platforms in config[sections]:
-            for stage in platforms['deps']:
+        for platform, settings in config[sections].items():
+            for stage in settings['deps']:
                 for item in stage:
                     item = lock_item_json(item)
 
@@ -229,9 +229,6 @@ def get_arg(args, i):
 def get_config_option(config, name):
     defaults = {
         'project': None,
-        'compiler_linux_x64':     'ricejasonf/emscripten_fastcomp:1.37.19',
-        'compiler_emscripten':    'ricejasonf/emscripten_fastcomp:1.37.19',
-        'compiler_tvossimulator': 'ricejasonf/emscripten_fastcomp:1.37.19',
         'platform_linux_x64':     'ricejasonf/cppdock:linux_x64',
         'platform_emscripten':    'ricejasonf/cppdock:emscripten',
         'platform_tvossimulator': 'ricejasonf/cppdock:tvossimulator',
@@ -244,10 +241,10 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_dep_image(config, platform, dockerfile):
+def make_dep_image(config, platform_name, dockerfile):
     tag_name = "{0}_build:{1}".format(
         config['cppdock']['name'],
-        platform
+        platform_name
     )
     p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
@@ -263,15 +260,22 @@ def make_dep_image(config, platform, dockerfile):
         """.format(tag_name)
         sys.exit(1)
 
-def make_deps_dockerfile(config, platform):
-    cppdock_image  = get_config_option(config, 'platform_' + platform)
-    deps = get_deps_from_config(config, platform)
+def get_platform_type(config, platform_name):
+    try:
+        return config['platforms'][platform_name]['type']
+    except:
+        raise ValueError('Platform name `{0}` not found.'.format(platform_name))
+
+def make_deps_dockerfile(config, platform_name):
+    platform_type = get_platform_type(config, platform_name)
+    cppdock_image  = get_config_option(config, 'platform_' + platform_type)
+    deps = get_deps_from_config(config, platform_name)
     deps_stages = ''
     deps_imports = ''
 
     for dep in deps:
-        deps_stages += string.join([make_deps_stage(cppdock_image, dep)])
-        deps_imports += make_deps_import(dep[-1][0], dep[-1][2])
+        deps_stages += string.join([make_deps_stage(cppdock_image, platform_name, dep)])
+        deps_imports += make_deps_import(platform_name, dep[-1][2])
 
     return """
 {0}
@@ -293,7 +297,7 @@ FROM {2}
     COPY --from=build_all /opt/install /opt/sysroot
 """.format(cppdock_image, deps_stages, cppdock_image)
 
-def make_deps_stage(cppdock_image, deps):
+def make_deps_stage(cppdock_image, platform_name, deps):
     copy_recipes_term = ""
     build_image = cppdock_image
     if os.path.isdir(root_path + '/cppdock_recipes'):
@@ -303,7 +307,6 @@ def make_deps_stage(cppdock_image, deps):
 
     install_deps = string.join([make_install_dep(x, y, z) for x, y, z in deps])
     branch = deps[-1][2].replace('/', '_')
-    platform = deps[-1][0]
 
     if not docker_image_digest == None:
         build_image = docker_image_digest
@@ -313,7 +316,7 @@ FROM {0} as build_{2}_{1}
     {4}
     WORKDIR /usr/local/src
     {3}
-""".format(build_image, platform, branch, install_deps, copy_recipes_term)
+""".format(build_image, platform_name, branch, install_deps, copy_recipes_term)
 
 def get_stage_docker_image_digest(stage):
     for item in stage:
@@ -331,17 +334,15 @@ def make_deps_import(platform, branch):
     return """
     COPY --from=build_{1}_{0} /opt/install/ /opt/sysroot""".format(platform, branch.replace('/', '_'))
 
-def get_deps_from_config(config, platform):
-    platform_info = config['platforms']
+def get_deps_from_config(config, platform_name):
+    platform = config['platforms'][platform_name]
 
-    for platforms in platform_info:
-        if platforms['type'] == platform:
-            return [get_deps_stage_items(stage, platform) for stage in platforms['deps']]
+    return [get_deps_stage_items(stage, platform['type']) for stage in platform['deps']]
     
     raise ValueError('Platform is not specified in cppdock json file')
 
-def get_deps_stage_items(deps_stage, platform):
-    return [(platform, item['revision'],  item['name']) for item in deps_stage]
+def get_deps_stage_items(deps_stage, platform_type):
+    return [(platform_type, item['revision'],  item['name']) for item in deps_stage]
 #
 #def get_dep_dir_name(repo, branch):
 #    return '{0}-{1}'.format(repo.split('/').pop(), branch)

@@ -2,10 +2,9 @@
   "cppdock": {
     "name": "test_json_lock"
   },
-  "platforms": [
-    {
+  "platforms": {
+    "my_linux_x64": {
       "type": "linux_x64",
-      "name": "my_linux_x64",
       "deps": [
         [
           {
@@ -30,7 +29,7 @@
         ]
       ]
     },
-    {
+    "my_emscripten": {
       "image": "ricejasonf/cppdock:emscripten_1_37_19",
       "type": "emscripten",
       "deps": [
@@ -50,5 +49,5 @@
         ]
       ]
     }
-  ]
+  }
 }
