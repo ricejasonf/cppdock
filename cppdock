@@ -132,6 +132,8 @@ def load_config_file(json_file_path):
             continue
         for platform, settings in config[sections].items():
             for stage in settings['deps']:
+                if not isinstance(stage, list):
+                    raise "Each stage in 'deps' must be an array."
                 for item in stage:
                     item = lock_item_json(item)
 
@@ -161,8 +163,8 @@ def get_current_sha_with_comment(item):
         return item['revision']
     else:
         if source == 'docker':
-            line = subprocess.check_output(['docker', 'inspect', "--format='{{index .RepoDigests 0 }}'", repo + ":" + tag]).split(':')
-            return line[1][0:64]
+            line = subprocess.check_output(['docker', 'inspect', "--format='{{.Id}}'", repo + ":" + tag]).split(':')
+            return line[1][7:64+7]
             raise ValueError("Unable to get SHA from docker image")
         else:
             tag = normalize_branch_name(tag)
