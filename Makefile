@@ -23,3 +23,9 @@ platform_tvossimulator:
 
 install:
 	cp ./cppdock /usr/local/bin/
+
+push: cppdock platforms
+	docker push ricejasonf/cppdock && \
+	docker push ricejasonf/cppdock:linux_x64 && \
+	docker push ricejasonf/cppdock:emscripten && \
+	docker push ricejasonf/cppdock:tvossimulator

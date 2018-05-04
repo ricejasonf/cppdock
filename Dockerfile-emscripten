@@ -1,4 +1,4 @@
-ARG EMSCRIPTEN_TAG=1.37.36
+ARG EMSCRIPTEN_TAG=1.37.39
 FROM ricejasonf/emscripten:$EMSCRIPTEN_TAG
   COPY cppdock /usr/local/bin
   COPY recipes/ /root/.cppdock_recipes
