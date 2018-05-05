@@ -4,7 +4,7 @@
 cppdock:
 	docker build --force-rm=true -t ricejasonf/cppdock .
 
-platforms: platform_linux_x64 platform_emscripten platform_tvossimulator
+platforms: platform_linux_x64 platform_emscripten
 
 platform_linux_x64:
 	docker build --force-rm=true -f ./Dockerfile-linux_x64 -t ricejasonf/cppdock:linux_x64 .
@@ -27,5 +27,5 @@ install:
 push: cppdock platforms
 	docker push ricejasonf/cppdock && \
 	docker push ricejasonf/cppdock:linux_x64 && \
-	docker push ricejasonf/cppdock:emscripten && \
-	docker push ricejasonf/cppdock:tvossimulator
+	docker push ricejasonf/cppdock:emscripten
+	#docker push ricejasonf/cppdock:tvossimulator
