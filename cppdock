@@ -20,6 +20,7 @@ def parse_args_command(args):
     parser.add_argument('command',      choices   = [
                                                         'init',
                                                         'build',
+                                                        'dev',
                                                         'install_dep',
                                                     ])
     return parser.parse_args(args)
@@ -47,6 +48,17 @@ def parse_args_build(args):
 
     return parser.parse_args(args)
 
+def parse_args_dev(args):
+    parser = argparse.ArgumentParser(prog='cppdock dev')
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
+
+    group  = parser.add_argument_group('required arguments')
+    group.add_argument('platform',      help      = 'Name of target platform')
+
+    return parser.parse_args(args)
+
 def parse_args_install_dep(args):
     parser = argparse.ArgumentParser(prog='cppdock install_dep')
     group  = parser.add_argument_group('required arguments')
@@ -61,6 +73,7 @@ def dispatch(command_args, cli_args):
         None:           lambda: None,
         'init':         (command_init,          parse_args_init),
         'build':        (command_build,         parse_args_build),
+        'dev':          (command_dev,           parse_args_dev),
         'install_dep':  (command_install_dep,   parse_args_install_dep),
     }
     if command in commands:
@@ -79,6 +92,12 @@ def command_build(args):
         print dockerfile
     else:
         make_dep_image(config, args.platform, dockerfile)
+
+def command_dev(args):
+    config = load_config_file_with_args(args)
+    platform_name = args.platform
+    make_dev_image(config, platform_name)
+    run_dev_image(config, platform_name)
 
 def command_install_dep(args):
     check_sysroot()
@@ -244,10 +263,7 @@ def get_config_option(config, name):
     return value
 
 def make_dep_image(config, platform_name, dockerfile):
-    tag_name = "{0}_build:{1}".format(
-        config['cppdock']['name'],
-        platform_name
-    )
+    tag_name = get_build_tag_name(config, platform_name)
     p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
     if p.returncode == 0:
@@ -288,6 +304,7 @@ FROM {1}
 def get_base_image(config, platform_name):
     return config['platforms'][platform_name].get('base_image')
 
+# deprecated
 def make_deps_dockerfile_stageless(config, platform):
     cppdock_image  = get_config_option(config, 'platform_' + platform)
     deps = get_deps_from_config(config, platform)
@@ -351,6 +368,63 @@ def get_deps_stage_items(deps_stage, platform_type):
 #
 #def get_dep_dir_name(repo, branch):
 #    return '{0}-{1}'.format(repo.split('/').pop(), branch)
+
+def make_dev_image(config, platform_name):
+    build_tag_name = get_build_tag_name(config, platform_name)
+    dev_tag_name = get_dev_tag_name(config, platform_name)
+    build_type = os.environ.get('BUILD_TYPE', None) or default_build_type(config, platform_name)
+    dockerfile = """
+FROM {0}
+    WORKDIR /opt/build
+    CMD cmake \
+        -DCMAKE_BUILD_TYPE={1} \
+        -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \
+        /opt/src \
+        && /bin/bash
+""".format(build_tag_name, build_type)
+
+    p = subprocess.Popen(['docker', 'build', '--tag=' + dev_tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
+    out, err = p.communicate(dockerfile)
+    if p.returncode == 0:
+        print """
+
+    Finished building {0}.
+        """.format(dev_tag_name)
+    else:
+        print """
+
+    FAILURE: Build of {0} FAILED.
+        """.format(dev_tag_name)
+        sys.exit(1)
+
+def run_dev_image(config, platform_name):
+    tag_name = get_dev_tag_name(config, platform_name)
+    pwd = os.getcwd()
+    p = subprocess.Popen(['docker', 'run', '--rm', '-it', '-v /' + pwd + ':/opt/src:ro', tag_name])
+
+def get_build_tag_name(config, platform_name):
+    return "{0}_build:{1}".format(
+        get_project_name(config),
+        platform_name
+    )
+
+def get_dev_tag_name(config, platform_name):
+    return "{0}_dev:{1}".format(
+        get_project_name(config),
+        platform_name
+    )
+
+def get_project_name(config):
+    try:
+        return config['cppdock']['name']
+    except:
+        raise ValueError('Project name not found in cppdock.json.')
+
+def default_build_type(config, platform_name):
+    if config['platforms'][platform_name]['type'] == 'emscripten' :
+        return 'Release'
+    else:
+        return 'Debug'
         
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
