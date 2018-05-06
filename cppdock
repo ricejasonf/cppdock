@@ -400,7 +400,7 @@ FROM {0}
 def run_dev_image(config, platform_name):
     tag_name = get_dev_tag_name(config, platform_name)
     pwd = os.getcwd()
-    p = subprocess.Popen(['docker', 'run', '--rm', '-it', '-v /' + pwd + ':/opt/src:ro', tag_name])
+    os.system('docker run --rm -it --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
 def get_build_tag_name(config, platform_name):
     return "{0}_build:{1}".format(
