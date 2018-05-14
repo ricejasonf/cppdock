@@ -156,13 +156,14 @@ def lock_item_json(item):
 
 def get_current_sha_with_comment(item):
     repo = item['name']
-    tag = item['tag']
+    tag = item.get('tag')
     source = item.get('source')
 
     if 'revision' in item:
         return item['revision']
     else:
         if source == 'docker':
+            tag = tag or 'latest'
             line = subprocess.check_output(['docker', 'inspect', "--format='{{.Id}}'", repo + ":" + tag]).split(':')
             return line[1][7:64+7]
             raise ValueError("Unable to get SHA from docker image")
@@ -178,7 +179,7 @@ def normalize_repo_name(name):
     return default_dep_path + name;
 
 def normalize_branch_name(name):
-    if len(name) == 0 or name == 'HEAD':
+    if name == None or len(name) == 0 or name == 'HEAD':
         return 'HEAD'
     elif name.startswith('refs/'):
         return name
