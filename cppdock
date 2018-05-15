@@ -78,6 +78,7 @@ def command_build(args):
     if args.print_only:
         print dockerfile
     else:
+        make_base_image_dockerfile(config, args.platform)
         make_dep_image(config, args.platform, dockerfile)
 
 def command_install_dep(args):
@@ -131,6 +132,8 @@ def load_config_file(json_file_path):
         if sections == 'cppdock':
             continue
         for platform, settings in config[sections].items():
+            check_base_image_conflict(settings)
+
             for stage in settings['deps']:
                 if not isinstance(stage, list):
                     raise "Each stage in 'deps' must be an array."
@@ -189,6 +192,10 @@ def normalize_branch_name(name):
 def is_sha(name):
     return len(name) == 40
 
+def check_base_image_conflict(settings):
+    if 'base_image' in settings and 'base_image_dockerfile' in settings:
+        raise StandardError("Conflicting base image settings detected")
+
 def get_max_key_length(config):
     length = 0
     for section in config.sections():
@@ -204,6 +211,24 @@ def make_archive_url(repo, branch):
 def make_docker_image_digest(repo, branch):
     return '{0}@sha256:{1}'.format(repo, branch)
 
+def get_base_image_dockerfile(config, platform_name):
+    return config['platforms'][platform_name].get('base_image_dockerfile')
+
+def make_base_image_dockerfile(config, platform_name):
+    base_image_dockerfile = get_base_image_dockerfile(config, platform_name)
+
+    if base_image_dockerfile:
+        dockerfile = "./{0}".format(base_image_dockerfile)
+        tag_name = "{0}_platform:latest".format(get_project_name(config))
+
+        p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file='+ dockerfile, '.'], stdin=subprocess.PIPE)
+        out, err = p.communicate('')
+
+        if p.returncode != 0:
+            print """
+            FAILURE
+            """
+ 
 def find_recipe(platform, repo):
     repo = repo.replace('/', '-')
     local_recipe_path = '/opt/cppdock_recipes'
@@ -269,6 +294,9 @@ def get_platform_type(config, platform_name):
     except:
         raise ValueError('Platform name `{0}` not found.'.format(platform_name))
 
+def get_project_name(config):
+    return config['cppdock']['name']
+
 def make_deps_dockerfile(config, platform_name):
     platform_type = get_platform_type(config, platform_name)
     cppdock_image = get_base_image(config, platform_name) or get_config_option(config, 'platform_' + platform_type)
@@ -287,7 +315,10 @@ FROM {1}
 """.format(deps_stages, cppdock_image, deps_imports)
 
 def get_base_image(config, platform_name):
-    return config['platforms'][platform_name].get('base_image')
+    if 'base_image_dockerfile' in config['platforms'][platform_name]:
+        return '{0}_platform'.format(get_project_name(config))
+    else:
+        return config['platforms'][platform_name].get('base_image')
 
 def make_deps_dockerfile_stageless(config, platform):
     cppdock_image  = get_config_option(config, 'platform_' + platform)
