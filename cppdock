@@ -2,6 +2,7 @@
 
 from collections import OrderedDict
 import argparse
+import glob
 import json
 import os
 import string
@@ -322,8 +323,8 @@ FROM {2}
 def make_deps_stage(cppdock_image, platform_name, deps):
     copy_recipes_term = ""
     build_image = cppdock_image
-    if os.path.isdir(root_path + '/cppdock_recipes'):
-        copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/" 
+    #if os.path.isdir(root_path + '/cppdock_recipes'):
+    #    copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/" 
 
     docker_image_digest = get_stage_docker_image_digest(deps)
 
@@ -349,8 +350,17 @@ def get_stage_docker_image_digest(stage):
 def make_install_dep(platform, branch, repo):
     if not is_sha(branch):
         return ''
-    return """
-    RUN cppdock install_dep {0} {1} {2}""".format(platform, branch, repo)
+    repo_recipe_prefix = repo.replace('/', '-')
+    copy_local_recipe = ''
+    if os.path.isfile(os.path.join(root_path, 'cppdock_recipes', repo_recipe_prefix + '-' + platform)):
+        copy_local_recipe = """
+    COPY cppdock_recipes/{0}-{1} /opt/cppdock_recipes/""".format(repo_recipe_prefix, platform)
+    elif os.path.isfile(os.path.join(root_path, 'cppdock_recipes', repo_recipe_prefix)):
+        copy_local_recipe = """
+    COPY cppdock_recipes/{0} /opt/cppdock_recipes/""".format(repo_recipe_prefix)
+
+    return """{3}
+    RUN cppdock install_dep {0} {1} {2}""".format(platform, branch, repo, copy_local_recipe)
 
 def make_deps_import(platform, branch):
     return """
