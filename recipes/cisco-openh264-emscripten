@@ -1,0 +1,7 @@
+#!/bin/bash
+
+export PATH=$PATH:/usr/local/src/emscripten
+emmake make OS=linux ARCH=asmjs install-static-lib \
+&& mkdir /opt/install/include && mkdir /opt/install/lib \
+&& mv /usr/local/include/wels /opt/install/include \
+&& mv /usr/local/lib/libopenh264.a /opt/install/lib

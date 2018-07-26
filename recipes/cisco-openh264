@@ -1,0 +1,12 @@
+#!/bin/bash
+
+export CC=/usr/local/bin/clang++
+export CXX=/usr/local/bin/clang++
+export CXXFLAGS=-stdlib=libc++
+export LD_LIBRARY_PATH=/usr/local/lib
+
+   apt-get update && apt-get install -yq nasm \
+&& make install-static-lib \
+&& mkdir /opt/install/include && mkdir /opt/install/lib \
+&& mv /usr/local/include/wels /opt/install/include \
+&& mv /usr/local/lib/libopenh264.a /opt/install/lib

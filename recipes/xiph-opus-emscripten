@@ -1,0 +1,11 @@
+#!/bin/bash
+
+export PATH=$PATH:/usr/local/src/emscripten
+apt-get update && apt-get install -yq libtool autoconf
+chmod u+x ./autogen.sh
+./autogen.sh
+emconfigure ./configure --prefix=/opt/install \
+                        --disable-intrinsics \
+                        --disable-rtcd \
+                        CFLAGS='-O2' \
+&& emmake make && make install
