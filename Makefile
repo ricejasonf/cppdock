@@ -21,6 +21,12 @@ platform_emscripten_1_37_19:
 platform_tvossimulator:
 	docker build --force-rm=true -f ./Dockerfile-tvossimulator -t ricejasonf/cppdock:tvossimulator .
 
+platform_macosx:
+	docker build --force-rm=true -f ./Dockerfile-macosx -t ricejasonf/cppdock:macosx .
+
+temp:
+	docker build --force-rm=true -f ./Dockerfile-temp -t ricejasonf/cppdock:temp .
+
 install:
 	cp ./cppdock /usr/local/bin/
 
