@@ -187,16 +187,28 @@ def get_current_sha_with_comment(item):
     else:
         if source == 'docker':
             tag = tag or 'latest'
-            line = subprocess.check_output(['docker', 'inspect', "--format='{{.Id}}'", repo + ":" + tag]).split(':')
-            return line[1][7:64+7]
-            raise ValueError("Unable to get SHA from docker image")
+            repo_tag = repo + ":" + tag
+
+            try:
+                # pull the image from the registry to get the RepoDigest
+                subprocess.check_output(['docker', 'pull', repo_tag])
+            except:
+                raise RuntimeError("Unable to pull docker image from registry: " + repo_tag )
+
+            try:
+                inspect_result =  subprocess.check_output(['docker', 'inspect', repo_tag])
+                digest = json.loads(inspect_result)[0]['RepoDigests'][0].split('@')[1]
+            except:
+                raise RuntimeError("Unable to get SHA from docker image")
+
+            return digest
         else:
             tag = normalize_branch_name(tag)
             lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
             for line in lines:
                 if line.endswith(tag):
                     return line[0:40]
-            raise ValueError("Unable to get SHA from remote git repository")
+            raise RuntimeError("Unable to get SHA from remote git repository")
 
 def normalize_repo_name(name):
     return default_dep_path + name;
@@ -229,7 +241,7 @@ def make_archive_url(repo, branch):
     return 'https://github.com/{0}/archive/{1}.zip'.format(repo, branch)
 
 def make_docker_image_digest(repo, branch):
-    return '{0}@sha256:{1}'.format(repo, branch)
+    return '{0}@{1}'.format(repo, branch)
 
 def get_base_image_dockerfile(config, platform_name):
     return config['platforms'][platform_name].get('base_image_dockerfile')
