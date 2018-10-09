@@ -96,7 +96,7 @@ CppDock is built specifically for cross-compiling and it supports custom build e
 
 Consider the following setup for a hypothetical `mydroid` platform:
 
-```json
+```
 {
   "cppdock": {
     "name": "nbdl" /* Project name */
