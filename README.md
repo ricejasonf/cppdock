@@ -6,31 +6,52 @@
 
 ## Overview
 
-CppDock is just a tiny python script that uses a config file to specify project specific values and platform specific dependencies based on GitHub.
+CppDock is just a tiny python script that uses a JSON config file to specify project specific values and platform specific dependencies based on GitHub.
 
-In the simple my_app example, running `cppdock build linux_x64` will create a Docker image called `my_app_deps:linux_64`.
+In the simple `my_app` example, running `cppdock build linux_x64` will create a Docker image called `my_app_deps:linux_64`.
 
 ### Lock Library Dependencies to Specific Revisions Automatically
 
-In a local `cppdock.ini` file you can specify repos of libraries and cppdock automatically sets the SHA of the revision so there are no unexpected changes.
+In a local `cppdock.json` file you can specify repos of libraries and cppdock automatically sets the SHA of the revision so there are no unexpected changes.
 
-```ini
-[linux_x64]
-ricejasonf/nbdl          =
-boostorg/hana            = develop
-boostorg/callable_traits = master
+```json
+{
+  "cppdock": {
+    "name": "nbdl"
+  },
+  "platforms": {
+    "develop": {
+      "type": "linux_x64",
+      "deps": [
+        [
+          {
+            "name": "boostorg/callable_traits",
+            "tag": "master"
+          }
+        ],
 ```
 
-Run `cppdock init` and cppdock.ini is updated in place automatically to the current revision for that branch or tag or `HEAD`.
+Run `cppdock init` and cppdock.json is updated in place automatically to the current revision for that branch or tag or `HEAD`.
 
-```ini
-[linux_x64]
-ricejasonf/nbdl          = 3d5f396f929b15f1b4229135686a58b4437f0967 # HEAD
-boostorg/hana            = 59393cac76e718210cdf06316e1ab496ee2079eb # develop
-boostorg/callable_traits = 684dfbd7dfbdd0438ef3670be10002ca33a71715 # master
+```json
+{
+  "cppdock": {
+    "name": "nbdl"
+  },
+  "platforms": {
+    "develop": {
+      "type": "linux_x64",
+      "deps": [
+        [
+          {
+            "name": "boostorg/callable_traits",
+            "revision": "684dfbd7dfbdd0438ef3670be10002ca33a71715",
+            "tag": "master"
+          }
+        ],
 ```
 
-To update a library simply delete the SHA (and `#`). Then run `cppdock init` again.
+To update a library simply delete the "revision" property. Then run `cppdock init` again.
 
 The great thing about this is that the builds for each library are cached by Docker so it only rebuilds a library when the revision has changed.
 
@@ -75,18 +96,27 @@ CppDock is built specifically for cross-compiling and it supports custom build e
 
 Consider the following setup for a hypothetical `mydroid` platform:
 
-```ini
-[cppdock]
-project = foo
-platform_mydroid = mydroid_platform_image
-compiler_mydroid = some_gcc_compiler
-
-[mydroid]
-kvasir-io-mpl = development
+```json
+{
+  "cppdock": {
+    "name": "nbdl" /* Project name */
+  },
+  "platforms": {
+    "develop": { /* The name of the platform */
+      "type": "linux_arm", /* The type of the platform (used in recipe name) */
+      "base_image": "my_droid_sdk", /* optionally specify name of docker image */
+      "deps": [
+        [
+          {
+            "name": "boostorg/callable_traits",
+            "revision": "684dfbd7dfbdd0438ef3670be10002ca33a71715",
+            "tag": "master"
+          }
+        ],
+      ]
+    },
+  }
+}
 ```
 
-`mydroid_sdk` and `some_gcc_compiler` are just Docker images for the build environment and the compiler respectively.
-
-The "platform" image should have any build tools required such as CMake or Python as well as an `/opt/toolchain.cmake` if you are relying on any default CMake recipes.
-
-All desired artifacts from the "platform" other than the toolchain file must be installed to `/user/local` to be usable in the combined build environment.
+The platform base image should have any build tools required such as CMake or Python as well as an `/opt/toolchain.cmake` if you are relying on any default CMake recipes.
