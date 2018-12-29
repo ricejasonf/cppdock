@@ -11,6 +11,7 @@ import sys
 import urllib2
 import warnings
 import zipfile
+import distutils.dir_util
 
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
@@ -23,6 +24,7 @@ def parse_args_command(args):
                                                         'build',
                                                         'dev',
                                                         'install_dep',
+                                                        'install_src',
                                                     ])
     return parser.parse_args(args)
 
@@ -68,6 +70,18 @@ def parse_args_install_dep(args):
     group.add_argument('repo',          help      = 'Name of git repo (e.g. boostorg/hana)')
     return parser.parse_args(args)
 
+def parse_args_install_src(args):
+    parser = argparse.ArgumentParser(prog='cppdock install_src')
+    group  = parser.add_argument_group('required arguments')
+    group.add_argument('branch',        help      = 'SHA1 of git revision')
+    group.add_argument('repo',          help      = 'Name of git repo (e.g. llvm-mirror/clang)')
+    group.add_argument('dest_dir',      help      = 'Path to copy source files to')
+    group  = parser.add_argument_group('optional arguments')
+    group.add_argument('src_dir',       nargs='?',
+                                        default='.',
+                                        help      = 'Path of subdirectory to copy from repo')
+    return parser.parse_args(args)
+
 def dispatch(command_args, cli_args):
     command = parse_args_command(command_args).command
     commands = {
@@ -76,6 +90,7 @@ def dispatch(command_args, cli_args):
         'build':        (command_build,         parse_args_build),
         'dev':          (command_dev,           parse_args_dev),
         'install_dep':  (command_install_dep,   parse_args_install_dep),
+        'install_src':  (command_install_src,   parse_args_install_src),
     }
     if command in commands:
         args = commands[command][1](cli_args)
@@ -129,6 +144,28 @@ def command_install_dep(args):
     FAILURE: Recipe returned error code {0}.
         """.format(p.returncode)
         sys.exit(1)
+
+def command_install_src(args):
+    url = make_archive_url(args.repo, args.branch)
+    input = urllib2.urlopen(url)
+    output = open('dep.zip', 'wr')
+    buf = ''
+    while True:
+        buf = input.read(800)
+        output.write(buf)
+        output.flush()
+        if (len(buf) == 0):
+            break
+    output.close()
+
+    assert os.path.isfile('dep.zip')
+    assert zipfile.is_zipfile('dep.zip')
+
+    zipfile.ZipFile('dep.zip', 'r').extractall()
+    base_src_dir = [x for x in os.listdir('.') if x.endswith(args.branch)][0]
+    src_dir = os.path.join(base_src_dir, args.src_dir);
+    distutils.dir_util.copy_tree(src_dir, args.dest_dir)
+    distutils.dir_util.remove_tree(base_src_dir);
 
 def install_deps_platform(platform, items):
     for i in range(len(items)):
