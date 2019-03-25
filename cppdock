@@ -56,6 +56,8 @@ def parse_args_dev(args):
     parser.add_argument('-f', '--file', dest      = 'json_file_path',
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
+    parser.add_argument('-p', '--port', dest      = 'port',
+                                        help      = 'Specify port to `docker run`')
 
     group  = parser.add_argument_group('required arguments')
     group.add_argument('platform',      help      = 'Name of target platform')
@@ -113,8 +115,9 @@ def command_build(args):
 def command_dev(args):
     config = load_config_file_with_args(args)
     platform_name = args.platform
+    ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
     make_dev_image(config, platform_name)
-    run_dev_image(config, platform_name)
+    run_dev_image(config, platform_name, ports_arg)
 
 def command_install_dep(args):
     check_sysroot()
@@ -489,10 +492,10 @@ FROM {0}
         """.format(dev_tag_name)
         sys.exit(1)
 
-def run_dev_image(config, platform_name):
+def run_dev_image(config, platform_name, ports_arg):
     tag_name = get_dev_tag_name(config, platform_name)
     pwd = os.getcwd()
-    os.system('docker run --rm -it --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
+    os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
 def get_build_tag_name(config, platform_name):
     return "{0}_build:{1}".format(
