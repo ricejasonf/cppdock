@@ -23,6 +23,7 @@ def parse_args_command(args):
                                                         'init',
                                                         'build',
                                                         'dev',
+                                                        'swarm_dev',
                                                         'install_dep',
                                                         'install_src',
                                                     ])
@@ -45,9 +46,9 @@ def parse_args_build(args):
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
                                         help      = 'Print Dockerfile without building')
-
-    group  = parser.add_argument_group('required arguments')
-    group.add_argument('platform',      help      = 'Name of target platform')
+    parser.add_argument('platform',     default   = None, 
+                                        nargs     = '?',
+                                        help      = 'Name of target platform')
 
     return parser.parse_args(args)
 
@@ -61,6 +62,20 @@ def parse_args_dev(args):
 
     group  = parser.add_argument_group('required arguments')
     group.add_argument('platform',      help      = 'Name of target platform')
+
+    return parser.parse_args(args)
+
+def parse_args_swarm_dev(args):
+    parser = argparse.ArgumentParser(prog='cppdock swarm_dev')
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
+    parser.add_argument('--stop',       dest      = 'stop',
+                                        action    = 'store_true',
+                                        help      = 'Stops the dev swarm services')
+    parser.add_argument('platform',     default   = None,
+                                        nargs     = '?',
+                                        help      = 'Name of service to shell into')
 
     return parser.parse_args(args)
 
@@ -91,6 +106,7 @@ def dispatch(command_args, cli_args):
         'init':         (command_init,          parse_args_init),
         'build':        (command_build,         parse_args_build),
         'dev':          (command_dev,           parse_args_dev),
+        'swarm_dev':    (command_swarm_dev,     parse_args_swarm_dev),
         'install_dep':  (command_install_dep,   parse_args_install_dep),
         'install_src':  (command_install_src,   parse_args_install_src),
     }
@@ -104,13 +120,19 @@ def command_init(args):
 def command_build(args):
     config = load_config_file_with_args(args)
 
-    dockerfile = make_deps_dockerfile(config, args.platform)
-    #dockerfile = make_deps_dockerfile_stageless(config, args.platform)
-    if args.print_only:
+    platforms = [args.platform] if args.platform else get_all_platforms(config)
+    for platform in platforms:
+        make_build_image(config, platform, args.print_only)
+
+def make_build_image(config, platform, print_only):
+    dockerfile = make_deps_dockerfile(config, platform)
+    tag_name = get_build_tag_name(config, platform)
+    if print_only:
+        print '\n\n\n###### Docker Image: ' + tag_name
         print dockerfile
     else:
-        make_base_image_dockerfile(config, args.platform)
-        make_dep_image(config, args.platform, dockerfile)
+        make_base_image_dockerfile(config, platform)
+        make_dep_image(config, platform, dockerfile)
 
 def command_dev(args):
     config = load_config_file_with_args(args)
@@ -118,6 +140,23 @@ def command_dev(args):
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
     make_dev_image(config, platform_name)
     run_dev_image(config, platform_name, ports_arg)
+
+def command_swarm_dev(args):
+    config = load_config_file_with_args(args)
+    stack_name = get_stack_name(config, 'dev')
+
+    if (args.stop):
+        subprocess.check_output(['docker', 'stack', 'rm', stack_name])
+    else:
+        for platform_name in get_all_platforms(config):
+            make_dev_image(config, platform_name)
+
+        run_stack_deploy(config, stack_name, 'latest')
+        run_stack_service_terminal(config, stack_name, args.platform)
+
+        dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
+        # if args.platform:
+        # TODO docker exec -it ${dev_service_platform_name}
 
 def command_install_dep(args):
     check_sysroot()
@@ -497,17 +536,70 @@ def run_dev_image(config, platform_name, ports_arg):
     pwd = os.getcwd()
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
-def get_build_tag_name(config, platform_name):
-    return "{0}_build:{1}".format(
-        get_project_name(config),
-        platform_name
+def run_stack_deploy(config, stack_name, version='latest'):
+    # docker stack deploy is already idempotent
+    compose_file_data = get_dev_compose_file(config, version)
+    p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
+    p.communicate(input=compose_file_data)
+    if p.returncode != 0:
+        print """
+
+    FAILURE: `docker stack deploy` for `{stack_name}` error code {error_code}.
+        """.format(stack_name=stack_name, error_code=p.returncode)
+        sys.exit(1)
+
+def run_stack_service_terminal(config, stack_name, platform_name):
+    print """
+    TODO shell into {stack_name}.{platform_name}
+    """
+    # container_id = # get_container_id(stack_name, platform_name)
+    # TODO finish
+    #os.system("docker exec -it {0} bash".format(container_id)
+
+def get_dev_compose_file(config, version):
+    platform_names = get_all_platforms(config)
+    services = [get_dev_compose_file_service(config, platform_name, version) for platform_name in platform_names]
+    services_s = ''.join(services)
+    return """
+    version: '3'
+    services: {0}
+    """.format(services_s)
+
+def get_dev_compose_file_service(config, platform_name, version='latest'):
+    platform = get_platform_config(config, platform_name)
+    image_tag = get_image_tag_name(config, platform_name, 'dev', version)
+    ports = platform.get('ports_dev') or  platform.get('ports') or []
+    ports = ', '.join(ports)
+    return """
+        {0}:
+            image: {1}
+            ports: [{2}]
+    """.format(platform_name, image_tag, ports)
+
+def get_build_tag_name(config, platform_name, version="latest"):
+    return get_image_tag_name(config, platform_name, "build", version)
+
+def get_dev_tag_name(config, platform_name, version="latest"):
+    return get_image_tag_name(config, platform_name, "dev", version)
+
+def get_image_tag_name(config, platform_name, image_type, version):
+    registry = get_registry(config)
+    assert(image_type in ['build', 'dev', 'release'])
+    return "{registry}{project}-{platform}{image_type}:{version}".format(
+        registry    = registry + '/' if registry else '',
+        project     = get_project_name(config),
+        platform    = platform_name,
+        image_type  = '-' + image_type if image_type != 'release' else '',
+        version     = version,
     )
 
-def get_dev_tag_name(config, platform_name):
-    return "{0}_dev:{1}".format(
-        get_project_name(config),
-        platform_name
-    )
+def get_stack_name(config, mode):
+    assert(mode in ['dev', 'release'])
+    name = get_project_name(config) + '-stack'
+
+    if mode == 'dev':
+        name += '-dev'
+    return name
 
 def get_project_name(config):
     try:
@@ -515,11 +607,21 @@ def get_project_name(config):
     except:
         raise ValueError('Project name not found in cppdock.json.')
 
+def get_registry(config):
+    return os.getenv('CPPDOCK_REGISTRY')
+
 def default_build_type(config, platform_name):
     if config['platforms'][platform_name]['type'] == 'emscripten' :
         return 'Release'
     else:
         return 'Debug'
+
+def get_all_platforms(config):
+    return config['platforms'].keys()
+
+def get_platform_config(config, platform_name):
+    # TODO maybe merge overrides for dev or something
+    return config['platforms'][platform_name]
         
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
