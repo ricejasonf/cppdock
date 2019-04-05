@@ -15,7 +15,7 @@ import distutils.dir_util
 
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
-default_dep_path = "https://github.com/" 
+default_dep_path = "https://github.com/"
 target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or None;
 dev_registry = os.getenv('CPPDOCK_DEV_REGISTRY') or '127.0.0.1:5000';
 
@@ -49,7 +49,7 @@ def parse_args_build(args):
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
                                         help      = 'Print Dockerfile without building')
-    parser.add_argument('platform',     default   = None, 
+    parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of target platform')
 
@@ -109,6 +109,19 @@ def parse_args_install_src(args):
                                         help      = 'Path of subdirectory to copy from repo')
     return parser.parse_args(args)
 
+def parse_args_init_dev_service(args):
+    parser = argparse.ArgumentParser(prog='cppdock init_dev_service')
+    parser.add_argument('--shell-only', dest      = 'shell_only',
+                                        action    = 'store_true',
+                                        help      = 'Run only as an interactive shell')
+    group  = parser.add_argument_group('required arguments')
+    group.add_argument('platform',      help      = 'Token for target platform')
+
+    #TODO Add a --shell-only option to be called by `cppdock dev ...`
+    assert not args.shell_only, "--shell-only option not implemented"
+
+    return parser.parse_args(args)
+
 def dispatch(command_args, cli_args):
     command = parse_args_command(command_args).command
     commands = {
@@ -116,10 +129,11 @@ def dispatch(command_args, cli_args):
         'init':                 (command_init,                  parse_args_init),
         'build':                (command_build,                 parse_args_build),
         'dev':                  (command_dev,                   parse_args_dev),
-        'dev_cluster':            (command_dev_cluster,             parse_args_dev_cluster),
-        'dev_registry':         (command_dev_registry,     parse_args_dev_registry),
+        'dev_cluster':          (command_dev_cluster,           parse_args_dev_cluster),
+        'dev_registry':         (command_dev_registry,          parse_args_dev_registry),
         'install_dep':          (command_install_dep,           parse_args_install_dep),
         'install_src':          (command_install_src,           parse_args_install_src),
+        'init_dev_service':     (command_init_dev_service,      parse_args_init_dev_service),
     }
     if command in commands:
         args = commands[command][1](cli_args)
@@ -237,6 +251,11 @@ def command_install_src(args):
     src_dir = os.path.join(base_src_dir, args.src_dir);
     distutils.dir_util.copy_tree(src_dir, args.dest_dir)
     distutils.dir_util.remove_tree(base_src_dir);
+
+def command_init_dev_service(args):
+    config = load_config_file_with_args(args)
+    assert args.platform in get_all_platforms(config), "Invalid platform name"
+    run_dev_service_target(config, args.platform)
 
 def install_deps_platform(platform, items):
     for i in range(len(items)):
@@ -368,7 +387,7 @@ def make_base_image_dockerfile(config, platform_name):
             print """
     FAILURE
             """
- 
+
 def find_recipe(platform, repo):
     repo = repo.replace('/', '-')
     local_recipe_path = os.path.expanduser('~') + '/.cppdock_recipes'
@@ -475,7 +494,7 @@ def make_deps_stage(cppdock_image, platform_name, deps):
     copy_recipes_term = ""
     build_image = cppdock_image
     #if os.path.isdir(root_path + '/cppdock_recipes'):
-    #    copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/" 
+    #    copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/"
 
     docker_image_digest = get_stage_docker_image_digest(deps)
 
@@ -521,7 +540,7 @@ def get_deps_from_config(config, platform_name):
     platform = config['platforms'][platform_name]
 
     return [get_deps_stage_items(stage, platform['type']) for stage in platform['deps']]
-    
+
     raise ValueError('Platform is not specified in cppdock json file')
 
 def get_deps_stage_items(deps_stage, platform_type):
@@ -593,12 +612,26 @@ def get_dev_compose_file_service(config, platform_name, version='latest'):
     platform = get_platform_config(config, platform_name)
     image_tag = get_image_tag_name(config, platform_name, 'dev', version)
     ports = platform.get('ports_dev') or  platform.get('ports') or []
+    dev_target = platform.get('dev_target')
+    command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
+    command = """ "
+        cmake \
+        -DCMAKE_BUILD_TYPE=Debug \
+        -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \
+        /opt/src \
+        && {command} "
+    """.format(command = command)
+
     ports = ', '.join(ports)
     return """
-        {0}:
-            image: {1}
-            ports: [{2}]
-    """.format(platform_name, image_tag, ports)
+        {platform}:
+            image: {image}
+            command: {command}
+            ports: [{ports}]
+    """.format(platform = platform_name,
+               image    = image_tag,
+               command  = command,
+               ports    = ports)
 
 def get_build_tag_name(config, platform_name, version="latest"):
     return get_image_tag_name(config, platform_name, "build", version)
@@ -652,6 +685,19 @@ def get_all_platforms(config):
 def get_platform_config(config, platform_name):
     # TODO maybe merge overrides for dev or something
     return config['platforms'][platform_name]
-        
+
+def run_dev_service_target(config, platform):
+    # This should run in a docker container
+    # Initializes cmake if needed
+    if not os.path.isfile('/opt/build/CMakeCache.txt'):
+        subprocess.check_output(
+            "cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' /opt/src")
+
+    # Make the cppdock_dev_service target or just hang out
+    # Things will show up in the logs and the user can still shell in to inspect things
+
+    command = "make cppdock_dev_service.{} || tail -f /dev/null".format(platform)
+    # FIXME This should pipe stdout properly. not just errors
+    subprocess.check_output("make cppdock_dev_service.{} || tail -f /dev/null")
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
