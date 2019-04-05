@@ -16,16 +16,19 @@ import distutils.dir_util
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/" 
+target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or None;
+dev_registry = os.getenv('CPPDOCK_DEV_REGISTRY') or '127.0.0.1:5000';
 
 def parse_args_command(args):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('command',      choices   = [
-                                                        'init',
                                                         'build',
                                                         'dev',
-                                                        'swarm_dev',
+                                                        'init',
+                                                        'dev_registry',
                                                         'install_dep',
                                                         'install_src',
+                                                        'dev_cluster',
                                                     ])
     return parser.parse_args(args)
 
@@ -65,18 +68,25 @@ def parse_args_dev(args):
 
     return parser.parse_args(args)
 
-def parse_args_swarm_dev(args):
-    parser = argparse.ArgumentParser(prog='cppdock swarm_dev')
+def parse_args_dev_cluster(args):
+    parser = argparse.ArgumentParser(prog='cppdock dev_cluster')
     parser.add_argument('-f', '--file', dest      = 'json_file_path',
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
     parser.add_argument('--stop',       dest      = 'stop',
                                         action    = 'store_true',
-                                        help      = 'Stops the dev swarm services')
+                                        help      = 'Stops the dev cluster services')
     parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of service to shell into')
 
+    return parser.parse_args(args)
+
+def parse_args_dev_registry(args):
+    parser = argparse.ArgumentParser(prog='cppdock dev_registry')
+    parser.add_argument('--stop',       dest      = 'stop',
+                                        action    = 'store_true',
+                                        help      = 'Stops the dev registry')
     return parser.parse_args(args)
 
 def parse_args_install_dep(args):
@@ -102,13 +112,14 @@ def parse_args_install_src(args):
 def dispatch(command_args, cli_args):
     command = parse_args_command(command_args).command
     commands = {
-        None:           lambda: None,
-        'init':         (command_init,          parse_args_init),
-        'build':        (command_build,         parse_args_build),
-        'dev':          (command_dev,           parse_args_dev),
-        'swarm_dev':    (command_swarm_dev,     parse_args_swarm_dev),
-        'install_dep':  (command_install_dep,   parse_args_install_dep),
-        'install_src':  (command_install_src,   parse_args_install_src),
+        None:                   lambda: None,
+        'init':                 (command_init,                  parse_args_init),
+        'build':                (command_build,                 parse_args_build),
+        'dev':                  (command_dev,                   parse_args_dev),
+        'dev_cluster':            (command_dev_cluster,             parse_args_dev_cluster),
+        'dev_registry':         (command_dev_registry,     parse_args_dev_registry),
+        'install_dep':          (command_install_dep,           parse_args_install_dep),
+        'install_src':          (command_install_src,           parse_args_install_src),
     }
     if command in commands:
         args = commands[command][1](cli_args)
@@ -141,15 +152,19 @@ def command_dev(args):
     make_dev_image(config, platform_name)
     run_dev_image(config, platform_name, ports_arg)
 
-def command_swarm_dev(args):
+def command_dev_cluster(args):
     config = load_config_file_with_args(args)
     stack_name = get_stack_name(config, 'dev')
 
     if (args.stop):
         subprocess.check_output(['docker', 'stack', 'rm', stack_name])
     else:
+        # builds and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
+            tag_name = get_dev_tag_name(config, platform_name)
             make_dev_image(config, platform_name)
+            print "Pushing dev image: {}".format(tag_name)
+            subprocess.check_output(['docker', 'push', tag_name])
 
         run_stack_deploy(config, stack_name, 'latest')
         run_stack_service_terminal(config, stack_name, args.platform)
@@ -157,6 +172,20 @@ def command_swarm_dev(args):
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
         # if args.platform:
         # TODO docker exec -it ${dev_service_platform_name}
+
+def command_dev_registry(args):
+    # docker service create --name test_registry --publish published=5000,target=5000 registry
+    env_val = os.getenv('CPPDOCK_DEV_REGISTRY')
+    registry_name = 'cppdock-dev-registry'
+    if env_val:
+        raise 'ERROR: CPPDOCK_DEV_REGISTRY is set ({})'.format(env_val)
+
+    if args.stop:
+        subprocess.check_output(['docker', 'service', 'rm', registry_name])
+    else:
+        subprocess.check_output(['docker', 'service', 'create', '--name',
+                                 registry_name, '--publish', '5000:5000', 'registry'])
+
 
 def command_install_dep(args):
     check_sysroot()
@@ -337,7 +366,7 @@ def make_base_image_dockerfile(config, platform_name):
 
         if p.returncode != 0:
             print """
-            FAILURE
+    FAILURE
             """
  
 def find_recipe(platform, repo):
@@ -386,14 +415,12 @@ def make_dep_image(config, platform_name, dockerfile):
     p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
     if p.returncode == 0:
-        print """
-
-    Finished building {0}.
-        """.format(tag_name)
+        print "Finished building {0}.".format(tag_name)
     else:
         print """
 
     FAILURE: Build of {0} FAILED.
+
         """.format(tag_name)
         sys.exit(1)
 
@@ -520,10 +547,7 @@ FROM {0}
     p = subprocess.Popen(['docker', 'build', '--tag=' + dev_tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
     if p.returncode == 0:
-        print """
-
-    Finished building {0}.
-        """.format(dev_tag_name)
+        print "Finished building {0}.".format(dev_tag_name)
     else:
         print """
 
@@ -583,7 +607,7 @@ def get_dev_tag_name(config, platform_name, version="latest"):
     return get_image_tag_name(config, platform_name, "dev", version)
 
 def get_image_tag_name(config, platform_name, image_type, version):
-    registry = get_registry(config)
+    registry = get_registry(config, image_type)
     assert(image_type in ['build', 'dev', 'release'])
     return "{registry}{project}-{platform}{image_type}:{version}".format(
         registry    = registry + '/' if registry else '',
@@ -607,8 +631,14 @@ def get_project_name(config):
     except:
         raise ValueError('Project name not found in cppdock.json.')
 
-def get_registry(config):
-    return os.getenv('CPPDOCK_REGISTRY')
+def get_registry(config, image_type):
+    assert(image_type in ['build', 'dev', 'release'])
+    if image_type == 'build':
+        return None
+    elif image_type == 'dev':
+        return dev_registry
+    else:
+        return target_registry
 
 def default_build_type(config, platform_name):
     if config['platforms'][platform_name]['type'] == 'emscripten' :
