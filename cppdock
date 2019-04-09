@@ -686,9 +686,15 @@ def get_platform_config(config, platform_name):
     # TODO maybe merge overrides for dev or something
     return config['platforms'][platform_name]
 
+def run_dev_service_target_init(config):
+    if not os.path.isfile('/opt/build/CMakeCache.txt'):
+        subprocess.check_output(
+            "cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' /opt/src")
+
 def run_dev_service_target(config, platform):
     # This should run in a docker container
     # Initializes cmake if needed
+    run_dev_service_target_init(config)
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
         subprocess.check_output(
             "cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' /opt/src")
@@ -696,8 +702,15 @@ def run_dev_service_target(config, platform):
     # Make the cppdock_dev_service target or just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
 
-    command = "make cppdock_dev_service.{} || tail -f /dev/null".format(platform)
-    # FIXME This should pipe stdout properly. not just errors
-    subprocess.check_output("make cppdock_dev_service.{} || tail -f /dev/null")
+    p = subprocess.Popen(['cmake', '--build', '.',
+                          '--target', "cppdock_dev_service.{}".format(platform)],
+                         cwd = '/opt/build')
+    p.communicate('')
+
+    # if it fails then just hang out so the container stays alive
+
+    if p.returncode != 0:
+        p = subprocess.Popen(['tail', '-f', '/dev/null'])
+        p.communicate('')
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
