@@ -603,10 +603,12 @@ def get_dev_compose_file(config, version):
     platform_names = get_all_platforms(config)
     services = [get_dev_compose_file_service(config, platform_name, version) for platform_name in platform_names]
     services_s = ''.join(services)
-    return """
+    result = """
     version: '3'
     services: {0}
     """.format(services_s)
+    print result
+    return result
 
 def get_dev_compose_file_service(config, platform_name, version='latest'):
     platform = get_platform_config(config, platform_name)
@@ -687,29 +689,32 @@ def get_platform_config(config, platform_name):
     return config['platforms'][platform_name]
 
 def run_dev_service_target_init(config):
-    if not os.path.isfile('/opt/build/CMakeCache.txt'):
-        subprocess.check_output(
-            "cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' /opt/src")
+    p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=Debug', 
+                          "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake",
+                          '/opt/src'],
+                         cwd = '/opt/build')
+    p.communicate('')
+    return p.returncode == 0
 
 def run_dev_service_target(config, platform):
     # This should run in a docker container
     # Initializes cmake if needed
-    run_dev_service_target_init(config)
-    if not os.path.isfile('/opt/build/CMakeCache.txt'):
-        subprocess.check_output(
-            "cmake -DCMAKE_BUILD_TYPE=Debug -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' /opt/src")
+
+    p = None
+    if not os.path.isfile('/opt/build/CMakeCache.txt') and run_dev_service_target_init(config):
+        p = subprocess.Popen(['cmake', '--build', '.',
+                              '--target',
+                              "cppdock_dev_service.{}".format(platform)],
+                             cwd = '/opt/build')
+        p.communicate('')
 
     # Make the cppdock_dev_service target or just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
 
-    p = subprocess.Popen(['cmake', '--build', '.',
-                          '--target', "cppdock_dev_service.{}".format(platform)],
-                         cwd = '/opt/build')
-    p.communicate('')
 
-    # if it fails then just hang out so the container stays alive
+    # if it fails or doesn't run then just hang out so the container stays alive
 
-    if p.returncode != 0:
+    if not (p and p.returncode == 0):
         p = subprocess.Popen(['tail', '-f', '/dev/null'])
         p.communicate('')
 
