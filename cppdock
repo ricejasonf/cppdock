@@ -493,8 +493,6 @@ FROM {2}
 def make_deps_stage(cppdock_image, platform_name, deps):
     copy_recipes_term = ""
     build_image = cppdock_image
-    #if os.path.isdir(root_path + '/cppdock_recipes'):
-    #    copy_recipes_term = "COPY cppdock_recipes /opt/cppdock_recipes/"
 
     docker_image_digest = get_stage_docker_image_digest(deps)
 
