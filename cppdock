@@ -19,17 +19,25 @@ default_dep_path = "https://github.com/"
 target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or None;
 dev_registry = os.getenv('CPPDOCK_DEV_REGISTRY') or '127.0.0.1:5000';
 
+def get_commands():
+    return {
+        'init':                 (command_init,              parse_args_init),
+        'build':                (command_build,             parse_args_build),
+        'dev':                  (command_dev,               parse_args_dev),
+        'dev_cluster':          (command_dev_cluster,       parse_args_dev_cluster),
+        'dev_registry':         (command_dev_registry,      parse_args_dev_registry),
+        'install_dep':          (command_install_dep,       parse_args_install_dep),
+        'install_src':          (command_install_src,       parse_args_install_src),
+        'init_dev_service':     (command_init_dev_service,  parse_args_init_dev_service),
+        '_complete':            (command_complete,          lambda _ : os.sys.argv[2]),
+    }
+
+def get_subcommands():
+    return filter(lambda x: not x.startswith('_'), get_commands().keys())
+
 def parse_args_command(args):
     parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('command',      choices   = [
-                                                        'build',
-                                                        'dev',
-                                                        'init',
-                                                        'dev_registry',
-                                                        'install_dep',
-                                                        'install_src',
-                                                        'dev_cluster',
-                                                    ])
+    parser.add_argument('command', choices = get_commands().keys())
     return parser.parse_args(args)
 
 def parse_args_init(args):
@@ -124,20 +132,44 @@ def parse_args_init_dev_service(args):
 
 def dispatch(command_args, cli_args):
     command = parse_args_command(command_args).command
-    commands = {
-        None:                   lambda: None,
-        'init':                 (command_init,                  parse_args_init),
-        'build':                (command_build,                 parse_args_build),
-        'dev':                  (command_dev,                   parse_args_dev),
-        'dev_cluster':          (command_dev_cluster,           parse_args_dev_cluster),
-        'dev_registry':         (command_dev_registry,          parse_args_dev_registry),
-        'install_dep':          (command_install_dep,           parse_args_install_dep),
-        'install_src':          (command_install_src,           parse_args_install_src),
-        'init_dev_service':     (command_init_dev_service,      parse_args_init_dev_service),
-    }
+    commands = get_commands()
     if command in commands:
         args = commands[command][1](cli_args)
         commands[command][0](args)
+
+def command_complete(args_str):
+    subcommands = get_subcommands()
+
+    args = args_str.split();
+    has_trailing_space = args_str.endswith(' ')
+    # length includes a trailing empty string if there is a trailing space
+    if args_str.endswith(' '):
+        args.append('')
+    # filter out completed options
+    args = filter(lambda x: not x.startswith('-'), args[:-1]) + [args[-1]]
+    length = len(args)
+
+    if length < 2:
+        # should not be possible from the completion script
+        return
+
+    candidates = []
+    completion = ''
+
+    if length == 2:
+        # complete subcommand
+        completion = args[1]
+        candidates = subcommands
+    elif length == 3:
+        # complete platform
+        subcommand = args[1]
+        if subcommand in ['build', 'dev', 'dev_cluster']:
+            completion = args[2]
+            config = load_config_file(default_json_file_path)
+            candidates = get_all_platforms(config)
+
+    candidates = filter(lambda x: x.startswith(completion), candidates)
+    print ' '.join(candidates)
 
 def command_init(args):
     load_config_file_with_args(args)
@@ -269,8 +301,7 @@ def load_config_file_with_args(args):
 
 def load_config_file(json_file_path):
     if not os.path.isfile(json_file_path):
-        print json_file_path
-        raise ValueError('Config file not found.')
+        raise ValueError('Config file not found: ' + json_file_path)
 
     stream = file(json_file_path, 'r')
     config = json.load(stream, object_pairs_hook=OrderedDict)
