@@ -652,7 +652,7 @@ def get_dev_compose_file(config, stack_name, version):
 def get_dev_compose_file_service(config, stack_name, platform_name, version='latest'):
     platform = get_platform_config(config, platform_name)
     image_tag = get_image_tag_name(config, platform_name, 'dev', version)
-    ports = platform.get('ports_dev') or  platform.get('ports') or []
+    ports = platform.get('ports') or []
     dev_target = platform.get('dev_target')
     command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
     command = """ "
@@ -664,6 +664,10 @@ def get_dev_compose_file_service(config, stack_name, platform_name, version='lat
     """.format(command = command)
 
     ports = ', '.join(ports)
+    web_root = platform.get('web_root')
+    if web_root:
+        web_root = "- web_root:{0}".format(web_root)
+
     return """
         {platform}:
             image: {image}
@@ -671,11 +675,13 @@ def get_dev_compose_file_service(config, stack_name, platform_name, version='lat
             volumes:
                 - /opt/cppdock/{stack_name}:/opt/src:ro
                 - /opt/build
-            ports: [{ports}]
+                {web_root}
+            expose: [{ports}]
     """.format(platform     = platform_name,
                stack_name   = stack_name,
                image        = image_tag,
                command      = command,
+               web_root     = web_root or '',
                ports        = ports)
 
 def get_build_tag_name(config, platform_name, version="latest"):
