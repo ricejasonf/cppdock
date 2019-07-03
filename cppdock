@@ -81,6 +81,9 @@ def parse_args_dev_cluster(args):
     parser.add_argument('-f', '--file', dest      = 'json_file_path',
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
+    parser.add_argument('--print-only', dest      = 'print_only',
+                                        action    = 'store_true',
+                                        help      = 'Print Composefil without deploying')
     parser.add_argument('--stop',       dest      = 'stop',
                                         action    = 'store_true',
                                         help      = 'Stops the dev cluster services')
@@ -201,9 +204,12 @@ def command_dev(args):
 def command_dev_cluster(args):
     config = load_config_file_with_args(args)
     stack_name = get_stack_name(config, 'dev')
+    version = 'latest'
 
     if (args.stop):
         subprocess.check_output(['docker', 'stack', 'rm', stack_name])
+    elif (args.print_only):
+        print get_dev_compose_file(config, stack_name, version)
     else:
         # builds and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
@@ -212,7 +218,7 @@ def command_dev_cluster(args):
             print "Pushing dev image: {}".format(tag_name)
             subprocess.check_output(['docker', 'push', tag_name])
 
-        run_stack_deploy(config, stack_name, 'latest')
+        run_stack_deploy(config, stack_name, version)
         run_stack_service_terminal(config, stack_name, args.platform)
 
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
@@ -615,7 +621,7 @@ def run_dev_image(config, platform_name, ports_arg):
 
 def run_stack_deploy(config, stack_name, version='latest'):
     # docker stack deploy is already idempotent
-    compose_file_data = get_dev_compose_file(config, version)
+    compose_file_data = get_dev_compose_file(config, stack_name, version)
     p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
     p.communicate(input=compose_file_data)
     if p.returncode != 0:
@@ -633,29 +639,28 @@ def run_stack_service_terminal(config, stack_name, platform_name):
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
 
-def get_dev_compose_file(config, version):
+def get_dev_compose_file(config, stack_name, version):
     platform_names = get_all_platforms(config)
-    services = [get_dev_compose_file_service(config, platform_name, version) for platform_name in platform_names]
+    services = [get_dev_compose_file_service(config, stack_name, platform_name, version) for platform_name in platform_names]
     services_s = ''.join(services)
     result = """
     version: '3'
     services: {0}
     """.format(services_s)
-    print result
     return result
 
-def get_dev_compose_file_service(config, platform_name, version='latest'):
+def get_dev_compose_file_service(config, stack_name, platform_name, version='latest'):
     platform = get_platform_config(config, platform_name)
     image_tag = get_image_tag_name(config, platform_name, 'dev', version)
     ports = platform.get('ports_dev') or  platform.get('ports') or []
     dev_target = platform.get('dev_target')
     command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
     command = """ "
-        cmake \
-        -DCMAKE_BUILD_TYPE=Debug \
-        -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \
-        /opt/src \
-        && {command} "
+              cmake \\
+                -DCMAKE_BUILD_TYPE=Debug \\
+                -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \\
+                /opt/src \\
+              && {command} "
     """.format(command = command)
 
     ports = ', '.join(ports)
@@ -663,11 +668,15 @@ def get_dev_compose_file_service(config, platform_name, version='latest'):
         {platform}:
             image: {image}
             command: {command}
+            volumes:
+                - /opt/cppdock/{stack_name}:/opt/src:ro
+                - /opt/build
             ports: [{ports}]
-    """.format(platform = platform_name,
-               image    = image_tag,
-               command  = command,
-               ports    = ports)
+    """.format(platform     = platform_name,
+               stack_name   = stack_name,
+               image        = image_tag,
+               command      = command,
+               ports        = ports)
 
 def get_build_tag_name(config, platform_name, version="latest"):
     return get_image_tag_name(config, platform_name, "build", version)
@@ -751,5 +760,20 @@ def run_dev_service_target(config, platform):
     if not (p and p.returncode == 0):
         p = subprocess.Popen(['tail', '-f', '/dev/null'])
         p.communicate('')
+
+def cluster_get_worker_token():
+    try:
+        return subprocess.check_output(['docker', 'swarm', 'join-token' '-q', 'worker'])
+    except:
+        raise RuntimeError("Unable to get cluster worker token")
+
+def cluster_get_build_ids():
+    p.communicate('')
+    try:
+        result =  subprocess.check_output(['docker', 'node', 'ls' '-q', '-f' 'label=cppdock-build'])
+        return result.splitlines()
+    except:
+        raise RuntimeError("Unable to get cluster ids for cppdock-build nodes")
+
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
