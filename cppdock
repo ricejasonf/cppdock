@@ -23,6 +23,7 @@ def get_commands():
     return {
         'init':                 (command_init,              parse_args_init),
         'build':                (command_build,             parse_args_build),
+        'build_nginx_proxy':    (command_build_nginx_proxy, parse_args_build_nginx_proxy),
         'dev':                  (command_dev,               parse_args_dev),
         'dev_cluster':          (command_dev_cluster,       parse_args_dev_cluster),
         'dev_registry':         (command_dev_registry,      parse_args_dev_registry),
@@ -60,6 +61,18 @@ def parse_args_build(args):
     parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of target platform')
+
+    return parser.parse_args(args)
+
+def parse_args_build_nginx_proxy(args):
+    parser = argparse.ArgumentParser(prog='cppdock build')
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
+
+    parser.add_argument('--print-only', dest      = 'print_only',
+                                        action    = 'store_true',
+                                        help      = 'Print Dockerfile without building')
 
     return parser.parse_args(args)
 
@@ -184,6 +197,9 @@ def command_build(args):
     for platform in platforms:
         make_build_image(config, platform, args.print_only)
 
+    if not args.platform and requires_nginx_proxy(config):
+        make_nginx_proxy_image(config, args.print_only)
+
 def make_build_image(config, platform, print_only):
     dockerfile = make_deps_dockerfile(config, platform)
     tag_name = get_build_tag_name(config, platform)
@@ -193,6 +209,25 @@ def make_build_image(config, platform, print_only):
     else:
         make_base_image_dockerfile(config, platform)
         make_dep_image(config, platform, dockerfile)
+
+def command_build_nginx_proxy(args):
+    config = load_config_file_with_args(args)
+    make_nginx_proxy_image(config, arg.print_only)
+
+def make_nginx_proxy_image(config, print_only):
+    version = 'latest'
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', version)
+    conf_data = get_nginx_proxy_conf(config)
+    dockerfile = """
+    FROM nginx:alpine
+        RUN echo "{conf_data}" >> /etc/nginx/nginx.conf
+    """.format(conf_data = conf_data.replace('\n', ''))
+
+    if (print_only):
+        print '\n\n\n###### Docker Image: ' + tag_name
+        print dockerfile
+    else:
+        make_docker_image(tag_name, dockerfile)
 
 def command_dev(args):
     config = load_config_file_with_args(args)
@@ -465,9 +500,8 @@ def get_config_option(config, name):
 
 def make_dep_image(config, platform_name, dockerfile):
     tag_name = get_build_tag_name(config, platform_name)
-    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
-    out, err = p.communicate(dockerfile)
-    if p.returncode == 0:
+    (returncode, out, err) = make_docker_image(tag_name, dockerfile)
+    if returncode == 0:
         print "Finished building {0}.".format(tag_name)
     else:
         print """
@@ -476,6 +510,11 @@ def make_dep_image(config, platform_name, dockerfile):
 
         """.format(tag_name)
         sys.exit(1)
+
+def make_docker_image(tag_name, dockerfile_data):
+    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
+    out, err = p.communicate(dockerfile_data)
+    return (p.returncode, out, err)
 
 def get_platform_type(config, platform_name):
     try:
@@ -692,7 +731,7 @@ def get_dev_tag_name(config, platform_name, version="latest"):
 
 def get_image_tag_name(config, platform_name, image_type, version):
     registry = get_registry(config, image_type)
-    assert(image_type in ['build', 'dev', 'release'])
+    assert(image_type in ['build', 'dev', 'release', 'service'])
     return "{registry}{project}-{platform}{image_type}:{version}".format(
         registry    = registry + '/' if registry else '',
         project     = get_project_name(config),
@@ -716,7 +755,7 @@ def get_project_name(config):
         raise ValueError('Project name not found in cppdock.json.')
 
 def get_registry(config, image_type):
-    assert(image_type in ['build', 'dev', 'release'])
+    assert(image_type in ['build', 'dev', 'release', 'service'])
     if image_type == 'build':
         return None
     elif image_type == 'dev':
@@ -780,6 +819,65 @@ def cluster_get_build_ids():
         return result.splitlines()
     except:
         raise RuntimeError("Unable to get cluster ids for cppdock-build nodes")
+
+def get_nginx_proxy_conf(config):
+    locations = ''
+    for platform_name in get_all_platforms(config):
+        loc = get_nginx_proxy_conf_locations(config, platform_name)
+        locations += loc
+    return """
+    server {{
+      listen 443 ssl;
+      #server_name ip-address;
+      ssl_certificate   /opt/certs/server.crt;
+      ssl_certificate_key   /opt/certs/server.key;
+      root /opt/web_root; {locations}
+    }}
+    """.format(locations = locations)
+
+def get_nginx_proxy_conf_locations(config, platform_name):
+    platform = config['platforms'][platform_name]
+    # location directive for each port
+    # default port shall be 80 (for http and websockets mainly)
+    port_specs = platform.get('ports') or ['80']
+    # uri should be uri prefix plus service_name
+    locations = ''
+    for port_spec in port_specs:
+        service_name = platform_name
+        port_data    = port_spec.split(':')
+        port         = port_data.pop()
+
+        if len(port_data) > 0:
+            service_name += '_' + port_data.pop()
+
+        uri = config.get('uri_prefix') or '/'
+        uri += service_name
+
+        locations += """
+
+      location {uri} {{
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $http_host;
+        proxy_set_header X-NginX-Proxy true;
+
+        proxy_pass http://{service_name}:{port};
+        proxy_redirect off;
+
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+      }}""".format(uri          = uri,
+                     service_name = service_name,
+                     port         = port)
+    return locations
+
+def requires_nginx_proxy(config):
+    # We could check a configure property
+    # if we want to allow an opt-out
+    return True;
+
+
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
