@@ -681,17 +681,20 @@ def run_stack_service_terminal(config, stack_name, platform_name):
 def get_dev_compose_file(config, stack_name, version):
     platform_names = get_all_platforms(config)
     services = [get_dev_compose_file_service(config, stack_name, platform_name, version) for platform_name in platform_names]
+
+    services += get_nginx_proxy_service(config)
     services_s = ''.join(services)
     result = """
     version: '3'
     services: {0}
+    volumes:
+        web_root:
     """.format(services_s)
     return result
 
 def get_dev_compose_file_service(config, stack_name, platform_name, version='latest'):
     platform = get_platform_config(config, platform_name)
     image_tag = get_image_tag_name(config, platform_name, 'dev', version)
-    ports = platform.get('ports') or []
     dev_target = platform.get('dev_target')
     command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
     command = """ "
@@ -702,7 +705,6 @@ def get_dev_compose_file_service(config, stack_name, platform_name, version='lat
               && {command} "
     """.format(command = command)
 
-    ports = ', '.join(ports)
     web_root = platform.get('web_root')
     if web_root:
         web_root = "- web_root:{0}".format(web_root)
@@ -715,13 +717,11 @@ def get_dev_compose_file_service(config, stack_name, platform_name, version='lat
                 - /opt/cppdock/{stack_name}:/opt/src:ro
                 - /opt/build
                 {web_root}
-            expose: [{ports}]
     """.format(platform     = platform_name,
                stack_name   = stack_name,
                image        = image_tag,
                command      = command,
-               web_root     = web_root or '',
-               ports        = ports)
+               web_root     = web_root or '')
 
 def get_build_tag_name(config, platform_name, version="latest"):
     return get_image_tag_name(config, platform_name, "build", version)
@@ -908,6 +908,16 @@ def get_nginx_location_websocket(uri, platform_name, port):
       }}""".format(uri           = uri,
                    platform_name = platform_name,
                    port          = port)
+
+def get_nginx_proxy_service(config):
+    version = 'latest'
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', version)
+    return """
+        nginx_proxy:
+            image: {tag_name} 
+            volumes:
+                - web_root:/opt/web_root:ro
+    """.format(tag_name = tag_name)
 
 def requires_nginx_proxy(config):
     # We could check a configure property
