@@ -837,40 +837,77 @@ def get_nginx_proxy_conf(config):
 
 def get_nginx_proxy_conf_locations(config, platform_name):
     platform = config['platforms'][platform_name]
-    # location directive for each port
-    # default port shall be 80 (for http and websockets mainly)
-    port_specs = platform.get('ports') or ['80']
+    # location directive for each port exposed to the internal network
+    # ports: ["{name}:{protocol}:{port}"] |
+    #        ["{name}:{port}"] |
+    #        ["{port}"]
+    #   name        - (optional) specify name to append to service name
+    #   prototcol   - (optional) specify ws or http or something else
+    #   port        - (required) port number 
     # uri should be uri prefix plus service_name
     locations = ''
-    for port_spec in port_specs:
-        service_name = platform_name
-        port_data    = port_spec.split(':')
-        port         = port_data.pop()
+    port_specs = get_platform_port_specs(config, platform_name)
 
-        if len(port_data) > 0:
-            service_name += '_' + port_data.pop()
+    for port_name, protocol, port in port_specs:
+        service_name = platform_name
 
         uri = config.get('uri_prefix') or '/'
         uri += service_name
+        if len(port_name) > 0:
+            uri += '_' + port_name
+        if protocol == 'ws':
+            locations += get_nginx_location_websocket(uri, platform_name, port)
+        else:
+            raise ValueError("Invalid protocol")
 
-        locations += """
+    return locations
 
+# returns [[name, protocol, port]]
+def get_platform_port_specs(config, platform_name):
+    platform = config['platforms'][platform_name]
+    port_specs = platform.get('ports') or []
+    results = []
+    for port_spec in port_specs:
+        port_data    = port_spec.split(':')
+        length       = len(port_data)
+
+        if length is 1:
+            [port] = port_data
+            port_name = ''
+            protocol = 'ws'
+        elif length is 2:
+            [port_name, port] = port_data
+            protocol = 'ws'
+        elif length is 3:
+            port_name, protocol, port = port_data
+        else:
+            raise ValueError("Invalid port specification")
+
+        # only websockets are supported
+        if protocol not in ['ws']:
+            raise ValueError("Invalid protocol specified")
+
+        results.append([port_name, protocol, port])
+
+    return results
+
+def get_nginx_location_websocket(uri, platform_name, port):
+    return """
       location {uri} {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Host $http_host;
         proxy_set_header X-NginX-Proxy true;
 
-        proxy_pass http://{service_name}:{port};
+        proxy_pass http://{platform_name}:{port};
         proxy_redirect off;
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
-      }}""".format(uri          = uri,
-                     service_name = service_name,
-                     port         = port)
-    return locations
+      }}""".format(uri           = uri,
+                   platform_name = platform_name,
+                   port          = port)
 
 def requires_nginx_proxy(config):
     # We could check a configure property
