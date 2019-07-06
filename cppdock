@@ -212,7 +212,7 @@ def make_build_image(config, platform, print_only):
 
 def command_build_nginx_proxy(args):
     config = load_config_file_with_args(args)
-    make_nginx_proxy_image(config, arg.print_only)
+    make_nginx_proxy_image(config, args.print_only)
 
 def make_nginx_proxy_image(config, print_only):
     version = 'latest'
@@ -221,7 +221,7 @@ def make_nginx_proxy_image(config, print_only):
     dockerfile = """
     FROM nginx:alpine
         RUN echo "{conf_data}" >> /etc/nginx/nginx.conf
-    """.format(conf_data = conf_data.replace('\n', ''))
+    """.format(conf_data = conf_data.replace('\n', ' \\\n'))
 
     if (print_only):
         print '\n\n\n###### Docker Image: ' + tag_name
