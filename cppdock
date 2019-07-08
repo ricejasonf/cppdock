@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from collections import OrderedDict
+from uuid import getnode as get_mac
 import argparse
 import glob
 import json
@@ -220,8 +221,8 @@ def make_nginx_proxy_image(config, print_only):
     conf_data = get_nginx_proxy_conf(config)
     dockerfile = """
     FROM nginx:alpine
-        RUN echo "{conf_data}" >> /etc/nginx/nginx.conf
-    """.format(conf_data = conf_data.replace('\n', ' \\\n'))
+        RUN echo $'{conf_data}' > /etc/nginx/nginx.conf
+    """.format(conf_data = conf_data.replace('\n', '\\n\\\n'))
 
     if (print_only):
         print '\n\n\n###### Docker Image: ' + tag_name
@@ -246,6 +247,7 @@ def command_dev_cluster(args):
     elif (args.print_only):
         print get_dev_compose_file(config, stack_name, version)
     else:
+        cluster_sync_source()
         # builds and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
             tag_name = get_dev_tag_name(config, platform_name)
@@ -808,17 +810,41 @@ def run_dev_service_target(config, platform):
 
 def cluster_get_worker_token():
     try:
-        return subprocess.check_output(['docker', 'swarm', 'join-token' '-q', 'worker'])
+        return subprocess.check_output(['docker', 'swarm', 'join-token', '-q', 'worker'])
     except:
         raise RuntimeError("Unable to get cluster worker token")
 
-def cluster_get_build_ids():
-    p.communicate('')
+def cluster_get_build_node_ids():
     try:
-        result =  subprocess.check_output(['docker', 'node', 'ls' '-q', '-f' 'label=cppdock-build'])
+        result = subprocess.check_output(['docker-machine', 'ls',
+                                          '-q', '--filter', 'label=cppdock_build=1'])
         return result.splitlines()
     except:
-        raise RuntimeError("Unable to get cluster ids for cppdock-build nodes")
+        raise RuntimeError("Unable to get cluster ids for cppdock_build nodes")
+
+def cluster_get_sync_path(path, kind):
+    assert kind in ['src', 'secret']
+    return "/home/ubuntu/sync{path}/{kind}".format(path = path,
+                                                   kind = kind)
+
+# rsyncs everything in pwd to nodes in cluster
+def cluster_sync_source():
+    nodes = cluster_get_build_node_ids()
+    pwd = os.getcwd()
+    for node in nodes:
+        path = cluster_get_sync_path(pwd, 'src')
+        p = subprocess.Popen(['docker-machine', 'ssh', node,
+                              'mkdir', '-p' ' {path}'.format(path=path)])
+        p.communicate('')
+        if p.returncode != 0:
+            raise RuntimeError("Unable to make the sync directory on {node}".format(node = node))
+        node_path = "ubuntu@{node}:{path}".format(node = node,
+                                           path = path)
+        p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d', '.', node_path])
+        p.communicate('')
+
+        if p.returncode != 0:
+            raise RuntimeError("Failed to sync source files to {node}".format(node = node))
 
 def get_nginx_proxy_conf(config):
     locations = ''
@@ -826,6 +852,33 @@ def get_nginx_proxy_conf(config):
         loc = get_nginx_proxy_conf_locations(config, platform_name)
         locations += loc
     return """
+user  nginx;
+worker_processes  1;
+
+error_log  /var/log/nginx/error.log warn;
+pid        /var/run/nginx.pid;
+
+events {{
+  worker_connections  1024;
+}}
+
+http {{
+    include       /etc/nginx/mime.types;
+    default_type  application/octet-stream;
+
+    log_format  main  \\'$remote_addr - $remote_user [$time_local] "$request" \\'
+		      \\'$status $body_bytes_sent "$http_referer" \\'
+		      \\'"$http_user_agent" "$http_x_forwarded_for"\\';
+
+    access_log  /var/log/nginx/access.log  main;
+
+    sendfile        on;
+    #tcp_nopush     on;
+
+    keepalive_timeout  65;
+
+    #gzip  on;
+
     server {{
       listen 443 ssl;
       #server_name ip-address;
@@ -833,6 +886,7 @@ def get_nginx_proxy_conf(config):
       ssl_certificate_key   /opt/certs/server.key;
       root /opt/web_root; {locations}
     }}
+}}
     """.format(locations = locations)
 
 def get_nginx_proxy_conf_locations(config, platform_name):
@@ -923,8 +977,6 @@ def requires_nginx_proxy(config):
     # We could check a configure property
     # if we want to allow an opt-out
     return True;
-
-
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
