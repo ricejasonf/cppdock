@@ -17,7 +17,7 @@ import distutils.dir_util
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
-target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or None;
+target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or '127.0.0.1:5000';
 dev_registry = os.getenv('CPPDOCK_DEV_REGISTRY') or '127.0.0.1:5000';
 cluster_build_nodes = None
 
@@ -262,6 +262,10 @@ def command_dev_cluster(args):
             make_dev_image(config, platform_name)
             print "Pushing dev image: {}".format(tag_name)
             subprocess.check_output(['docker', 'push', tag_name])
+
+            print "Pushing nginx_proxy..."
+            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
+            subprocess.check_output(['docker', 'push', nginx_proxy_tag_name])
 
         run_stack_deploy(config, stack_name, version)
         run_stack_service_terminal(config, stack_name, args.platform)
@@ -707,12 +711,11 @@ def get_dev_compose_file_service(config, stack_name, platform_name, version='lat
     image_tag = get_image_tag_name(config, platform_name, 'dev', version)
     dev_target = platform.get('dev_target')
     command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
-    command = """ "
-              cmake \\
+    command = """ bash -c "cmake \\
                 -DCMAKE_BUILD_TYPE=Debug \\
                 -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \\
                 /opt/src \\
-              && {command} "
+              && {command}"
     """.format(command = command)
 
     web_root = platform.get('web_root')
@@ -744,7 +747,7 @@ def get_build_tag_name(config, platform_name, version="latest"):
 def get_dev_tag_name(config, platform_name, version="latest"):
     return get_image_tag_name(config, platform_name, "dev", version)
 
-def get_image_tag_name(config, platform_name, image_type, version):
+def get_image_tag_name(config, platform_name, image_type, version="latest"):
     registry = get_registry(config, image_type)
     assert(image_type in ['build', 'dev', 'release', 'service'])
     return "{registry}{project}-{platform}{image_type}:{version}".format(
