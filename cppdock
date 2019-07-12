@@ -868,8 +868,38 @@ def cluster_sync_source(nodes):
             raise RuntimeError("Failed to sync source files to {node}".format(node = node))
 
 def get_nginx_proxy_conf(config):
-    locations = ''
-    upstreams = ''
+    locations           = ''
+    upstreams           = ''
+    # TODO get domain from config
+    domain              = 'MY_DOMAIN'
+    redirect_servers    = ''
+
+    if domain.startswith('www.'):
+        non_www_domain = domain[4:]
+        redirect_servers += """
+    server {{
+        # redirect to https
+	server_name {domain} {non_www_domain};
+	return 301 https://{domain}$request_uri;
+    }}
+    server {{
+        # redirect to www.
+        listen 443 ssl;
+        server_name {non_www_domain};
+        ssl_certificate /run/secrets/{domain}.crt;
+        ssl_certificate_key /run/secrets/{domain}.key;
+	return 301 https://{domain}$request_uri;
+    }}""".format(domain         = domain,
+                 non_www_domain = non_www_domain)
+    else:
+        redirect_servers += """
+    server {{
+        # redirect to https
+	server_name {domain};
+	return 301 https://{domain}$request_uri;
+    }}""".format(domain = domain)
+
+
     for platform_name in get_all_platforms(config):
         locations += get_nginx_proxy_conf_locations(config, platform_name)
         upstreams += get_nginx_proxy_conf_upstreams(config, platform_name)
@@ -904,16 +934,25 @@ http {{
 
     {upstreams}
 
+    {redirect_servers}
+
     server {{
-      listen 443 ssl;
-      #server_name ip-address;
-      ssl_certificate   /opt/certs/server.crt;
-      ssl_certificate_key   /opt/certs/server.key;
-      root /opt/web_root; {locations}
+        listen 443 ssl;
+        server_name {domain};
+        ssl_certificate   /run/secrets/{domain}.crt;
+        ssl_certificate_key   /run/secrets/{domain}.key;
+        root /opt/web_root;
+        {locations}
+        location / {{
+            # web app uri redirect
+            try_files $uri $uri/ /index.html;
+        }}
     }}
 }}
-    """.format(locations = locations,
-               upstreams = upstreams)
+    """.format(locations        = locations,
+               upstreams        = upstreams,
+               domain           = domain,
+               redirect_servers = redirect_servers)
 
 def get_nginx_proxy_conf_upstreams(config, platform_name):
     platform = config['platforms'][platform_name]
@@ -998,8 +1037,10 @@ def get_platform_port_specs(config, platform_name):
     return results
 
 def get_nginx_location_websocket(uri, platform_name, port):
+    # creates a location with an exact uri match of the platform name
+    # it proxies to the websocket backend
     return """
-      location {uri} {{
+      location = {uri} {{
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header Host $http_host;
