@@ -60,6 +60,12 @@ def parse_args_build(args):
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
                                         help      = 'Print Dockerfile without building')
+    parser.add_argument('--domain',     dest      = 'domain',
+                                        default   = '',
+                                        help      = 'Domain for web proxy')
+    parser.add_argument('--tag',        dest      = 'tag',
+                                        default   = '',
+                                        help      = 'Tag name if no domain')
     parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of target platform')
@@ -67,7 +73,7 @@ def parse_args_build(args):
     return parser.parse_args(args)
 
 def parse_args_build_nginx_proxy(args):
-    parser = argparse.ArgumentParser(prog='cppdock build')
+    parser = argparse.ArgumentParser(prog='cppdock build_nginx_proxy')
     parser.add_argument('-f', '--file', dest      = 'json_file_path',
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
@@ -75,6 +81,8 @@ def parse_args_build_nginx_proxy(args):
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
                                         help      = 'Print Dockerfile without building')
+    parser.add_argument('domain',       default   = None,
+                                        help      = 'Domain name of proxy server')
 
     return parser.parse_args(args)
 
@@ -98,13 +106,12 @@ def parse_args_dev_cluster(args):
                                         help      = 'Specify path to json file')
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
-                                        help      = 'Print Composefil without deploying')
+                                        help      = 'Print Compose file without deploying')
     parser.add_argument('--stop',       dest      = 'stop',
                                         action    = 'store_true',
                                         help      = 'Stops the dev cluster services')
-    parser.add_argument('platform',     default   = None,
-                                        nargs     = '?',
-                                        help      = 'Name of service to shell into')
+    parser.add_argument('domain',       default   = None,
+                                        help      = 'Domain name or tag if no proxy')
 
     return parser.parse_args(args)
 
@@ -181,7 +188,7 @@ def command_complete(args_str):
     elif length == 3:
         # complete platform
         subcommand = args[1]
-        if subcommand in ['build', 'dev', 'dev_cluster']:
+        if subcommand in ['build', 'dev']:
             completion = args[2]
             config = load_config_file(default_json_file_path)
             candidates = get_all_platforms(config)
@@ -194,32 +201,36 @@ def command_init(args):
 
 def command_build(args):
     config = load_config_file_with_args(args)
+    tag = args.tag
+
+    if not tag and args.domain:
+        tag = args.domain.split('.', 1)[0] if args.domain else 'dev'
 
     platforms = [args.platform] if args.platform else get_all_platforms(config)
     for platform in platforms:
-        make_build_image(config, platform, args.print_only)
+        make_build_image(config, platform, tag, args.print_only)
 
-    if not args.platform and requires_nginx_proxy(config):
-        make_nginx_proxy_image(config, args.print_only)
+    if args.domain:
+        make_nginx_proxy_image(config, tag, args.domain, args.print_only)
 
-def make_build_image(config, platform, print_only):
+def make_build_image(config, platform, tag, print_only):
     dockerfile = make_deps_dockerfile(config, platform)
-    tag_name = get_build_tag_name(config, platform)
     if print_only:
+        tag_name = get_build_tag_name(config, platform, tag)
         print '\n\n\n###### Docker Image: ' + tag_name
         print dockerfile
     else:
         make_base_image_dockerfile(config, platform)
-        make_dep_image(config, platform, dockerfile)
+        make_dep_image(config, platform, tag, dockerfile)
 
 def command_build_nginx_proxy(args):
     config = load_config_file_with_args(args)
-    make_nginx_proxy_image(config, args.print_only)
+    tag = args.domain.split('.', 1)[0]
+    make_nginx_proxy_image(config, tag, args.domain, args.print_only)
 
-def make_nginx_proxy_image(config, print_only):
-    version = 'latest'
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', version)
-    conf_data = get_nginx_proxy_conf(config)
+def make_nginx_proxy_image(config, tag, domain, print_only):
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
+    conf_data = get_nginx_proxy_conf(config, domain)
     dockerfile = """
     FROM nginx:alpine
         RUN echo $'{conf_data}' > /etc/nginx/nginx.conf
@@ -235,18 +246,19 @@ def command_dev(args):
     config = load_config_file_with_args(args)
     platform_name = args.platform
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
-    make_dev_image(config, platform_name)
+    make_dev_image(config, platform_name, 'dev')
     run_dev_image(config, platform_name, ports_arg)
 
 def command_dev_cluster(args):
-    config = load_config_file_with_args(args)
-    stack_name = get_stack_name(config, 'dev')
-    version = 'latest'
+    domain      = args.domain
+    tag         = args.domain.split('.', 1)[0]
+    config      = load_config_file_with_args(args)
+    stack_name  = get_stack_name(config, tag)
 
     if (args.stop):
         subprocess.check_output(['docker', 'stack', 'rm', stack_name])
     elif (args.print_only):
-        print get_dev_compose_file(config, stack_name, version)
+        print get_dev_compose_file(config, domain, tag)
     else:
         nodes = cluster_get_build_node_ids()
         if is_cluster_mode():
@@ -258,21 +270,20 @@ def command_dev_cluster(args):
         cluster_sync_source(nodes)
         # builds and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
-            tag_name = get_dev_tag_name(config, platform_name)
-            make_dev_image(config, platform_name)
+            tag_name = get_dev_tag_name(config, platform_name, tag)
+            make_dev_image(config, platform_name, tag)
             print "Pushing dev image: {}".format(tag_name)
             subprocess.check_output(['docker', 'push', tag_name])
 
-            print "Pushing nginx_proxy..."
-            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
+            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', tag)
+            print "Pushing nginx_proxy image :{}".format(nginx_proxy_tag_name)
             subprocess.check_output(['docker', 'push', nginx_proxy_tag_name])
 
-        run_stack_deploy(config, stack_name, version)
+        run_stack_deploy(config, stack_name, domain, tag)
         run_stack_service_terminal(config, stack_name, args.platform)
 
+        print "Finished deploying {stack_name}\n".format(stack_name = stack_name)
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
-        # if args.platform:
-        # TODO docker exec -it ${dev_service_platform_name}
 
 def command_dev_registry(args):
     # docker service create --name test_registry --publish published=5000,target=5000 registry
@@ -512,8 +523,8 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_dep_image(config, platform_name, dockerfile):
-    tag_name = get_build_tag_name(config, platform_name)
+def make_dep_image(config, platform_name, tag, dockerfile):
+    tag_name = get_build_tag_name(config, platform_name, tag)
     (returncode, out, err) = make_docker_image(tag_name, dockerfile)
     if returncode == 0:
         print "Finished building {0}.".format(tag_name)
@@ -642,9 +653,9 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
-def make_dev_image(config, platform_name):
-    build_tag_name = get_build_tag_name(config, platform_name)
-    dev_tag_name = get_dev_tag_name(config, platform_name)
+def make_dev_image(config, platform_name, tag):
+    build_tag_name = get_build_tag_name(config, platform_name, tag)
+    dev_tag_name = get_dev_tag_name(config, platform_name, tag)
     build_type = os.environ.get('BUILD_TYPE', None) or default_build_type(config, platform_name)
     dockerfile = """
 FROM {0}
@@ -672,9 +683,9 @@ def run_dev_image(config, platform_name, ports_arg):
     pwd = os.getcwd()
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
-def run_stack_deploy(config, stack_name, version='latest'):
+def run_stack_deploy(config, stack_name, domain, tag):
     # docker stack deploy is already idempotent
-    compose_file_data = get_dev_compose_file(config, stack_name, version)
+    compose_file_data = get_dev_compose_file(config, domain, tag)
     p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
     p.communicate(input=compose_file_data)
     if p.returncode != 0:
@@ -685,18 +696,19 @@ def run_stack_deploy(config, stack_name, version='latest'):
         sys.exit(1)
 
 def run_stack_service_terminal(config, stack_name, platform_name):
+    service_name = get_service_name(config, platform_name)
     print """
-    TODO shell into {stack_name}.{platform_name}
+    TODO shell into {service_name} somehow
     """
     # container_id = # get_container_id(stack_name, platform_name)
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
 
-def get_dev_compose_file(config, stack_name, version):
+def get_dev_compose_file(config, domain, tag):
     platform_names = get_all_platforms(config)
-    services = [get_dev_compose_file_service(config, stack_name, platform_name, version) for platform_name in platform_names]
+    services = [get_dev_compose_file_service(config, platform_name, domain, tag) for platform_name in platform_names]
 
-    services += get_nginx_proxy_service(config)
+    services += get_nginx_proxy_service(config, domain, tag)
     services_s = ''.join(services)
     result = """
     version: '3'
@@ -706,9 +718,10 @@ def get_dev_compose_file(config, stack_name, version):
     """.format(services_s)
     return result
 
-def get_dev_compose_file_service(config, stack_name, platform_name, version='latest'):
+def get_dev_compose_file_service(config, platform_name, domain, tag):
     platform = get_platform_config(config, platform_name)
-    image_tag = get_image_tag_name(config, platform_name, 'dev', version)
+    service_name = get_service_name(config, platform_name)
+    image_tag = get_dev_tag_name(config, platform_name, tag)
     dev_target = platform.get('dev_target')
     command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
     command = """ bash -c "cmake \\
@@ -727,43 +740,44 @@ def get_dev_compose_file_service(config, stack_name, platform_name, version='lat
     src_mount_path = remote_pwd if is_cluster_mode() else pwd
 
     return """
-        {platform}:
+        {service_name}:
             image: {image}
             command: {command}
+            environment:
+                - DOMAIN={domain}
             volumes:
                 - {src_mount_path}:/opt/src:ro
                 - /opt/build
                 {web_root}
     """.format(platform       = platform_name,
-               stack_name     = stack_name,
+               service_name   = service_name,
                image          = image_tag,
                command        = command,
                web_root       = web_root or '',
+               domain         = domain or '',
                src_mount_path = src_mount_path)
 
-def get_build_tag_name(config, platform_name, version="latest"):
-    return get_image_tag_name(config, platform_name, "build", version)
+def get_build_tag_name(config, platform_name, tag):
+    return get_image_tag_name(config, platform_name, "build", tag)
 
-def get_dev_tag_name(config, platform_name, version="latest"):
-    return get_image_tag_name(config, platform_name, "dev", version)
+def get_dev_tag_name(config, platform_name, tag):
+    return get_image_tag_name(config, platform_name, "dev", tag)
 
-def get_image_tag_name(config, platform_name, image_type, version="latest"):
+def get_image_tag_name(config, platform_name, image_type, tag):
     registry = get_registry(config, image_type)
     assert(image_type in ['build', 'dev', 'release', 'service'])
-    return "{registry}{project}-{platform}{image_type}:{version}".format(
+    return "{registry}{project}-{platform}{image_type}:{tag}".format(
         registry    = registry + '/' if registry else '',
         project     = get_project_name(config),
         platform    = platform_name,
         image_type  = '-' + image_type if image_type != 'release' else '',
-        version     = version,
+        tag         = tag,
     )
 
-def get_stack_name(config, mode):
-    assert(mode in ['dev', 'release'])
-    name = get_project_name(config) + '-stack'
-
-    if mode == 'dev':
-        name += '-dev'
+def get_stack_name(config, sub_name):
+    name = get_project_name(config)
+    assert sub_name
+    name += '_' + sub_name
     return name
 
 def get_project_name(config):
@@ -844,7 +858,7 @@ def cluster_get_build_node_ids():
         raise RuntimeError("Unable to get cluster ids for cppdock_build nodes")
 
 def cluster_get_sync_path(path, kind):
-    assert kind in ['src', 'secret']
+    assert kind in ['src']
     return "/home/ubuntu/sync{path}/{kind}".format(path = path,
                                                    kind = kind)
 
@@ -867,11 +881,10 @@ def cluster_sync_source(nodes):
         if p.returncode != 0:
             raise RuntimeError("Failed to sync source files to {node}".format(node = node))
 
-def get_nginx_proxy_conf(config):
+def get_nginx_proxy_conf(config, domain):
     locations           = ''
     upstreams           = ''
     # TODO get domain from config
-    domain              = 'MY_DOMAIN'
     redirect_servers    = ''
 
     if domain.startswith('www.'):
@@ -967,13 +980,13 @@ def get_nginx_proxy_conf_upstreams(config, platform_name):
     port_specs = get_platform_port_specs(config, platform_name)
 
     for port_name, protocol, port in port_specs:
-        service_name = platform_name
+        service_name = get_service_name(config, platform_name)
 
         if protocol == 'ws':
             upstreams += """
-    upstream docker-{platform_name} {{
-        server {platform_name}:{port};
-    }}""".format(platform_name = platform_name,
+    upstream docker-{service_name} {{
+        server {service_name}:{port};
+    }}""".format(service_name  = service_name,
                  port          = port)
         else:
             raise ValueError("Invalid protocol")
@@ -994,14 +1007,14 @@ def get_nginx_proxy_conf_locations(config, platform_name):
     port_specs = get_platform_port_specs(config, platform_name)
 
     for port_name, protocol, port in port_specs:
-        service_name = platform_name
+        service_name = get_service_name(config, platform_name)
 
         uri = config.get('uri_prefix') or '/'
         uri += service_name
         if len(port_name) > 0:
             uri += '_' + port_name
         if protocol == 'ws':
-            locations += get_nginx_location_websocket(uri, platform_name, port)
+            locations += get_nginx_location_websocket(uri, service_name, port)
         else:
             raise ValueError("Invalid protocol")
 
@@ -1036,7 +1049,7 @@ def get_platform_port_specs(config, platform_name):
 
     return results
 
-def get_nginx_location_websocket(uri, platform_name, port):
+def get_nginx_location_websocket(uri, service_name, port):
     # creates a location with an exact uri match of the platform name
     # it proxies to the websocket backend
     return """
@@ -1046,37 +1059,44 @@ def get_nginx_location_websocket(uri, platform_name, port):
         proxy_set_header Host $http_host;
         proxy_set_header X-NginX-Proxy true;
 
-        proxy_pass http://docker-{platform_name};
+        proxy_pass http://docker-{service_name};
         proxy_redirect off;
 
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
       }}""".format(uri           = uri,
-                   platform_name = platform_name,
+                   service_name  = service_name,
                    port          = port)
 
-def get_nginx_proxy_service(config):
-    version = 'latest'
-    service_names = ', '.join(get_all_platforms(config))
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', version)
+def get_nginx_proxy_service(config, domain, tag):
+    service_name_fn = lambda x : get_service_name(config, x)
+    service_names = ', '.join(map(service_name_fn, get_all_platforms(config)))
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
     return """
         nginx_proxy:
             image: {tag_name} 
             volumes:
                 - web_root:/opt/web_root:ro
+            secrets:
+                - {domain}.crt
+                - {domain}.key
             depends_on: [{service_names}]
     """.format(tag_name      = tag_name,
+               domain        = domain,
                service_names = service_names)
-
-def requires_nginx_proxy(config):
-    # We could check a configure property
-    # if we want to allow an opt-out
-    return True;
 
 def is_cluster_mode():
     # if DOCKER_HOST env var is set and we find at least one docker-machine node
     return len(cluster_get_build_node_ids()) > 0
+
+def get_service_name(config, platform_name):
+    return get_project_name(config) + '_' + platform_name
+
+def check_secret(name):
+    p = subprocess.Popen(['docker', 'secret', 'inspect', name])
+    p.communicate('')
+    return p.returncode != 0
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
