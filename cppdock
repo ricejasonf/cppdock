@@ -286,7 +286,6 @@ def command_dev_cluster(args):
             subprocess.check_output(['docker', 'push', nginx_proxy_tag_name])
 
         run_stack_deploy(config, stack_name, domain, tag)
-        run_stack_service_terminal(config, stack_name, args.platform)
 
         print "Finished deploying {stack_name}\n".format(stack_name = stack_name)
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
@@ -714,14 +713,22 @@ def get_dev_compose_file(config, domain, tag):
     platform_names = get_all_platforms(config)
     services = [get_dev_compose_file_service(config, platform_name, domain, tag) for platform_name in platform_names]
 
+    secrets = """
+        {domain}.crt:
+            external: true
+        {domain}.key:
+            external: true""".format(domain = domain)
+
     services += get_nginx_proxy_service(config, domain, tag)
     services_s = ''.join(services)
     result = """
     version: '3.1'
-    services: {0}
+    services: {services}
     volumes:
         web_root:
-    """.format(services_s)
+    secrets: {secrets}
+    """.format(services = services_s, 
+               secrets  = secrets)
     return result
 
 def get_dev_compose_file_service(config, platform_name, domain, tag):
@@ -1115,7 +1122,7 @@ def generate_self_signed_ssl_certificate(domain):
     print "Creating self signed certificate..."
     p = subprocess.Popen([
         'openssl', 'req',
-            '-new', '-key', '/dev/stdin',
+            '-new', '-x509', '-key', '/dev/stdin',
             '-subj', subj],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE)
