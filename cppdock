@@ -735,8 +735,7 @@ def get_dev_compose_file_service(config, platform_name, domain, tag):
     platform = get_platform_config(config, platform_name)
     service_name = get_service_name(config, platform_name)
     image_tag = get_dev_tag_name(config, platform_name, tag)
-    dev_target = platform.get('dev_target')
-    command = "make {}".format(dev_target) if dev_target else "tail -f /dev/null"
+    command = platform.get('dev_command') or 'tail -f /dev/null'
     command = """ bash -c "cmake \\
                 -DCMAKE_BUILD_TYPE=Debug \\
                 -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \\
@@ -1089,6 +1088,9 @@ def get_nginx_proxy_service(config, domain, tag):
     return """
         nginx_proxy:
             image: {tag_name}
+            ports: 
+                - '80:80'
+                - '443:443'
             volumes:
                 - web_root:/opt/web_root:ro
             secrets:
