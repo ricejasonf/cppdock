@@ -110,6 +110,9 @@ def parse_args_dev_cluster(args):
     parser.add_argument('--stop',       dest      = 'stop',
                                         action    = 'store_true',
                                         help      = 'Stops the dev cluster services')
+    parser.add_argument('--gen-certs',  dest      = 'gen_certs',
+                                        action    = 'store_true',
+                                        help      = 'Generates self signed certs for the domain')
     parser.add_argument('domain',       default   = None,
                                         help      = 'Domain name or tag if no proxy')
 
@@ -255,6 +258,9 @@ def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
     stack_name  = get_stack_name(config, tag)
 
+    if args.gen_certs:
+        import_ssl_certificate(*generate_self_signed_ssl_certificate(domain))
+
     if (args.stop):
         subprocess.check_output(['docker', 'stack', 'rm', stack_name])
     elif (args.print_only):
@@ -275,7 +281,7 @@ def command_dev_cluster(args):
             print "Pushing dev image: {}".format(tag_name)
             subprocess.check_output(['docker', 'push', tag_name])
 
-            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', tag)
+            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
             print "Pushing nginx_proxy image :{}".format(nginx_proxy_tag_name)
             subprocess.check_output(['docker', 'push', nginx_proxy_tag_name])
 
@@ -711,7 +717,7 @@ def get_dev_compose_file(config, domain, tag):
     services += get_nginx_proxy_service(config, domain, tag)
     services_s = ''.join(services)
     result = """
-    version: '3'
+    version: '3.1'
     services: {0}
     volumes:
         web_root:
@@ -809,7 +815,7 @@ def get_platform_config(config, platform_name):
     return config['platforms'][platform_name]
 
 def run_dev_service_target_init(config):
-    p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=Debug', 
+    p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=Debug',
                           "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake",
                           '/opt/src'],
                          cwd = '/opt/build')
@@ -975,7 +981,7 @@ def get_nginx_proxy_conf_upstreams(config, platform_name):
     #        ["{port}"]
     #   name        - (optional) specify name to append to service name
     #   prototcol   - (optional) specify ws or http or something else
-    #   port        - (required) port number 
+    #   port        - (required) port number
     upstreams = ''
     port_specs = get_platform_port_specs(config, platform_name)
 
@@ -1001,7 +1007,7 @@ def get_nginx_proxy_conf_locations(config, platform_name):
     #        ["{port}"]
     #   name        - (optional) specify name to append to service name
     #   prototcol   - (optional) specify ws or http or something else
-    #   port        - (required) port number 
+    #   port        - (required) port number
     # uri should be uri prefix plus service_name
     locations = ''
     port_specs = get_platform_port_specs(config, platform_name)
@@ -1075,7 +1081,7 @@ def get_nginx_proxy_service(config, domain, tag):
     tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
     return """
         nginx_proxy:
-            image: {tag_name} 
+            image: {tag_name}
             volumes:
                 - web_root:/opt/web_root:ro
             secrets:
@@ -1097,6 +1103,46 @@ def check_secret(name):
     p = subprocess.Popen(['docker', 'secret', 'inspect', name])
     p.communicate('')
     return p.returncode != 0
+
+def generate_self_signed_ssl_certificate(domain):
+    subj = '/C=US/ST=Nevada/L=Henderson/O=Dis/CN={}'.format(domain)
+    try:
+	key_data = subprocess.check_output(['openssl', 'genrsa', '4096'])
+    except:
+	raise RuntimeError('Failed to generate SSL key (via openssl)')
+
+    # Not sure about this if we need it to ever be secure
+    print "Creating self signed certificate..."
+    p = subprocess.Popen([
+        'openssl', 'req',
+            '-new', '-key', '/dev/stdin',
+            '-subj', subj],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE)
+    crt_data, crt_err = p.communicate(key_data)
+
+    if p.returncode != 0:
+	raise RuntimeError('Failed to generate SSL cert (via openssl)')
+
+    return (domain, key_data, crt_data)
+
+def import_ssl_certificate(domain, key_data, crt_data):
+    # Add as docker secrets
+    key_name = '{}.key'.format(domain)
+    crt_name = '{}.crt'.format(domain)
+    print 'Adding certificates to secret database...'
+    p = subprocess.Popen(['docker', 'secret', 'create', key_name, '-'],
+                         stdin=subprocess.PIPE)
+                         #stdout=subprocess.PIPE)
+    p.communicate(key_data)
+    if p.returncode != 0:
+	raise RuntimeError('Failed to create docker secret for {}'.format(key_name))
+
+    p = subprocess.Popen(['docker', 'secret', 'create', crt_name, '-'],
+                         stdin=subprocess.PIPE)
+    p.communicate(crt_data)
+    if p.returncode != 0:
+	raise RuntimeError('Failed to create docker secret for {}'.format(crt_name))
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
