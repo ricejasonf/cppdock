@@ -206,7 +206,7 @@ def command_build(args):
     config = load_config_file_with_args(args)
     tag = args.tag
 
-    if not tag and args.domain:
+    if not tag:
         tag = args.domain.split('.', 1)[0] if args.domain else 'dev'
 
     platforms = [args.platform] if args.platform else get_all_platforms(config)
@@ -776,6 +776,7 @@ def get_dev_tag_name(config, platform_name, tag):
     return get_image_tag_name(config, platform_name, "dev", tag)
 
 def get_image_tag_name(config, platform_name, image_type, tag):
+    assert tag
     registry = get_registry(config, image_type)
     assert(image_type in ['build', 'dev', 'release', 'service'])
     return "{registry}{project}-{platform}{image_type}:{tag}".format(
