@@ -250,7 +250,7 @@ def command_dev(args):
     platform_name = args.platform
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
     make_dev_image(config, platform_name, 'dev')
-    run_dev_image(config, platform_name, ports_arg)
+    run_dev_image(config, platform_name, ports_arg, 'dev')
 
 def command_dev_cluster(args):
     domain      = args.domain
@@ -683,8 +683,8 @@ FROM {0}
         """.format(dev_tag_name)
         sys.exit(1)
 
-def run_dev_image(config, platform_name, ports_arg):
-    tag_name = get_dev_tag_name(config, platform_name)
+def run_dev_image(config, platform_name, ports_arg, tag):
+    tag_name = get_dev_tag_name(config, platform_name, tag)
     pwd = os.getcwd()
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
