@@ -21,6 +21,15 @@ target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or '127.0.0.1:5000';
 dev_registry = os.getenv('CPPDOCK_DEV_REGISTRY') or '127.0.0.1:5000';
 cluster_build_nodes = None
 
+def remove_none(obj):
+  if isinstance(obj, (list, tuple, set)):
+    return type(obj)(remove_none(x) for x in obj if x is not None)
+  elif isinstance(obj, dict):
+    return type(obj)((remove_none(k), remove_none(v))
+      for k, v in obj.items() if k is not None)
+  else:
+    return obj
+
 def get_commands():
     return {
         'init':                 (command_init,              parse_args_init),
@@ -599,7 +608,7 @@ def make_deps_stage(cppdock_image, platform_name, deps):
 
     # only one dep that is source: docker does not use make_install_dep
 
-    docker_image_digest = get_stage_docker_image_digest(deps) 
+    docker_image_digest = get_stage_docker_image_digest(deps)
     if docker_image_digest is not None:
     	build_image  = docker_image_digest
         install_deps = ''
@@ -712,24 +721,29 @@ def run_stack_service_terminal(config, stack_name, platform_name):
 def get_dev_compose_file(config, domain, tag):
     platform_names = get_all_platforms(config)
     services = [get_dev_compose_file_service(config, platform_name, domain, tag) for platform_name in platform_names]
+    crt = '{}.crt'.format(domain)
+    key = '{}.key'.format(domain)
 
-    secrets = """
-        {domain}.crt:
-            external: true
-        {domain}.key:
-            external: true""".format(domain = domain)
+    secrets = {
+        crt: { 'external': True },
+        key: { 'external': True }
+    }
 
-    services += get_nginx_proxy_service(config, domain, tag)
-    services_s = ''.join(services)
-    result = """
-    version: '3.1'
-    services: {services}
-    volumes:
-        web_root:
-    secrets: {secrets}
-    """.format(services = services_s, 
-               secrets  = secrets)
-    return result
+    services.append(get_nginx_proxy_service(config, domain, tag))
+    services_dict = {}
+    for x in services:
+        services_dict.update(x)
+
+    result = {
+        'version': '3.1',
+        'services': services_dict,
+        'volumes': {
+            'web_root': None
+        },
+        'secrets': secrets
+    }
+
+    return json.dumps(remove_none(result), indent=2, separators=(',', ': '))
 
 def get_dev_compose_file_service(config, platform_name, domain, tag):
     platform = get_platform_config(config, platform_name)
@@ -745,29 +759,27 @@ def get_dev_compose_file_service(config, platform_name, domain, tag):
 
     web_root = platform.get('web_root')
     if web_root:
-        web_root = "- web_root:{0}".format(web_root)
+        web_root = "web_root:{0}".format(web_root)
 
     pwd = os.getcwd()
     remote_pwd = cluster_get_sync_path(pwd, 'src')
     src_mount_path = remote_pwd if is_cluster_mode() else pwd
+    src_mount = '{src_mount_path}:/opt/src:ro'.format(src_mount_path = src_mount_path)
 
-    return """
-        {service_name}:
-            image: {image}
-            command: {command}
-            environment:
-                - DOMAIN={domain}
-            volumes:
-                - {src_mount_path}:/opt/src:ro
-                - /opt/build
-                {web_root}
-    """.format(platform       = platform_name,
-               service_name   = service_name,
-               image          = image_tag,
-               command        = command,
-               web_root       = web_root or '',
-               domain         = domain or '',
-               src_mount_path = src_mount_path)
+    return {
+        service_name: {
+            'image': image_tag,
+            'command': command,
+            'environment': {
+                'DOMAIN': domain
+            },
+            'volumes': [
+                src_mount,
+                '/opt/build',
+                web_root
+            ]
+        }
+    }
 
 def get_build_tag_name(config, platform_name, tag):
     return get_image_tag_name(config, platform_name, "build", tag)
@@ -1088,23 +1100,22 @@ def get_nginx_location_websocket(uri, service_name, port):
 
 def get_nginx_proxy_service(config, domain, tag):
     service_name_fn = lambda x : get_service_name(config, x)
-    service_names = ', '.join(map(service_name_fn, get_all_platforms(config)))
+    service_names = map(service_name_fn, get_all_platforms(config))
     tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
-    return """
-        nginx_proxy:
-            image: {tag_name}
-            ports: 
-                - '80:80'
-                - '443:443'
-            volumes:
-                - web_root:/opt/web_root:ro
-            secrets:
-                - {domain}.crt
-                - {domain}.key
-            depends_on: [{service_names}]
-    """.format(tag_name      = tag_name,
-               domain        = domain,
-               service_names = service_names)
+    return {
+        'nginx_proxy': {
+            'image': tag_name,
+            'ports': ['80:80', '443:443'],
+            'volumes': [
+                'web_root:/opt/web_root:ro'
+            ],
+            'secrets': [
+                "{}.crt".format(domain),
+                "{}.key".format(domain)
+            ],
+            'depends_on': service_names
+        }
+    }
 
 def is_cluster_mode():
     # if DOCKER_HOST env var is set and we find at least one docker-machine node
