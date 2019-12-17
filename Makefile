@@ -1,6 +1,5 @@
 .PHONY: platforms cppdock platform_linux_x64 platform_emscripten platform_tvossimulator
 
-# DEPRECATED
 cppdock:
 	docker build --force-rm=true -t ricejasonf/cppdock .
 

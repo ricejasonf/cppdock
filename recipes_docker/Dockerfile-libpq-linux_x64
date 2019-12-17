@@ -1,0 +1,19 @@
+FROM ricejasonf/parmexpr as build
+
+  RUN apt-get update -yq && apt-get install -yq wget
+
+  WORKDIR /opt/src
+  RUN wget https://ftp.postgresql.org/pub/source/v12.1/postgresql-12.1.tar.gz \
+   && tar -xvzf postgresql-12.1.tar.gz
+
+  WORKDIR /opt/src/postgresql-12.1
+  RUN mkdir /opt/install \
+   && ./configure --prefix /opt/install \
+                  --without-readline \
+                  --without-zlib \
+   && make \
+   && make -C src/include install \
+   && make -C src/interfaces install
+
+FROM ubuntu:eoan
+  COPY --from=build /opt/install /opt/install
