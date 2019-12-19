@@ -226,7 +226,11 @@ def command_build(args):
         make_nginx_proxy_image(config, tag, args.domain, args.print_only)
 
 def make_build_image(config, platform, tag, print_only):
+    if is_platform_service(config, platform):
+        return
+
     dockerfile = make_deps_dockerfile(config, platform)
+
     if print_only:
         tag_name = get_build_tag_name(config, platform, tag)
         print '\n\n\n###### Docker Image: ' + tag_name
@@ -285,6 +289,8 @@ def command_dev_cluster(args):
         cluster_sync_source(nodes)
         # builds and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
+            if get_platform_type(config, platform_name).endswith('service'):
+                continue
             tag_name = get_dev_tag_name(config, platform_name, tag)
             make_dev_image(config, platform_name, tag)
             print "Pushing dev image: {}".format(tag_name)
@@ -367,6 +373,7 @@ def command_install_src(args):
 def command_init_dev_service(args):
     config = load_config_file_with_args(args)
     assert args.platform in get_all_platforms(config), "Invalid platform name"
+    assert not get_platform_type(config, args.platform), "Invalid platform"
     run_dev_service_target(config, args.platform)
 
 def install_deps_platform(platform, items):
@@ -386,17 +393,14 @@ def load_config_file(json_file_path):
     stream = file(json_file_path, 'r')
     config = json.load(stream, object_pairs_hook=OrderedDict)
 
-    for sections in config:
-        if sections == 'cppdock':
-            continue
-        for platform, settings in config[sections].items():
-            check_base_image_conflict(settings)
+    for platform, settings in config['platforms'].items():
+        check_base_image_conflict(settings)
 
-            for stage in settings['deps']:
-                if not isinstance(stage, list):
-                    raise "Each stage in 'deps' must be an array."
-                for item in stage:
-                    item = lock_item_json(item)
+        for stage in settings.get('deps', []):
+            if not isinstance(stage, list):
+                raise "Each stage in 'deps' must be an array."
+            for item in stage:
+                item = lock_item_json(item)
 
     write_config_file(config, json_file_path)
     return config
@@ -560,6 +564,16 @@ def get_platform_type(config, platform_name):
         return config['platforms'][platform_name]['type']
     except:
         raise ValueError('Platform name `{0}` not found.'.format(platform_name))
+
+# is_platform_service(config, platform_name)
+# is_platform_service(platform_type)
+def is_platform_service(*argv):
+    if len(argv) == 1:
+        [platform_type] = argv
+    elif len(argv) == 2:
+        [config, platform_name] = argv
+        platform_type = get_platform_type(config, platform_name)
+    return platform_type.endswith('service')
 
 def get_project_name(config):
     return config['cppdock']['name']
@@ -781,6 +795,12 @@ def get_dev_compose_file_service(config, platform_name, domain, tag):
         }
     }
 
+#def get_compose_file_external_service(config, platform_name)
+#    platform = get_platform(config, platform_name)
+#    assert is_platform_service(platform.type), 'External platform must be type "service"'
+    # TODO copy key/value all except "tag" and "revision" 
+    # TODO call this function when building dev_compose_file
+
 def get_build_tag_name(config, platform_name, tag):
     return get_image_tag_name(config, platform_name, "build", tag)
 
@@ -937,8 +957,9 @@ def get_nginx_proxy_conf(config, domain):
 	return 301 https://{domain}$request_uri;
     }}""".format(domain = domain)
 
-
     for platform_name in get_all_platforms(config):
+        if get_platform_type(config, platform_name) == 'service':
+            continue;
         locations += get_nginx_proxy_conf_locations(config, platform_name)
         upstreams += get_nginx_proxy_conf_upstreams(config, platform_name)
     return """
