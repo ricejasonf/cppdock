@@ -57,6 +57,10 @@ def parse_args_init(args):
     parser.add_argument('-f', '--file', dest      = 'json_file_path',
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
+    parser.add_argument('--print-config',
+                                        dest      = 'print_config',
+                                        action    = 'store_true',
+                                        help      = 'Print consolidated config')
 
     return parser.parse_args(args)
 
@@ -209,7 +213,9 @@ def command_complete(args_str):
     print ' '.join(candidates)
 
 def command_init(args):
-    load_config_file_with_args(args)
+    config = load_config_file_with_args(args)
+    if args.print_config:
+        print json.dumps(config, indent=2, separators=(',', ': '))
 
 def command_build(args):
     config = load_config_file_with_args(args)
@@ -387,12 +393,93 @@ def load_config_file_with_args(args):
     return load_config_file(json_file_path)
 
 def load_config_file(json_file_path):
+    config_paths = []
+    config_paths.insert(0, json_file_path)
+    config = load_config_file_json(json_file_path)
+
+    # we do not attempt to lock deps in the base_config
+    config = lock_config_file_deps(config, json_file_path)
+    config = normalize_config_paths(config)
+    config = merge_base_config(config, config_paths)
+    config = process_config_replace_deps(config)
+
+    source_path = os.path.dirname(config_paths[0])
+    source_path = config["cppdock"].get("source_path", source_path)
+    config["cppdock"]["source_path"] = source_path
+    return config
+
+def load_config_file_json(json_file_path):
     if not os.path.isfile(json_file_path):
         raise ValueError('Config file not found: ' + json_file_path)
-
     stream = file(json_file_path, 'r')
     config = json.load(stream, object_pairs_hook=OrderedDict)
 
+    # validate
+    assert "cppdock" in config,             "Config must have cppdock section"
+    assert "name" in config["cppdock"],     "Config must have 'name' in cppdock section"
+
+    return config
+
+def normalize_config_paths(config):
+    # this should happen after writing revision locks
+    cppdock = config["cppdock"]
+    if "base_config" in cppdock:
+        cppdock["base_config"] = os.path.abspath(cppdock["base_config"])
+    if "source_path" in cppdock:
+        cppdock["source_path"] = os.path.abspath(cppdock["source_path"])
+    return config
+
+def write_config_file(config, json_file_path):
+    try:
+        with open(json_file_path, 'wb') as fh:
+            json.dump(config, fh, indent=2, separators=(',', ': '))
+            fh.write('\n')
+    except:
+        warnings.warn('WARNING: Unable to write to json file')
+
+def merge_base_config(config, config_paths):
+    if "base_config" not in config["cppdock"]:
+        return config
+    base_config_path = os.path.abspath(config["cppdock"]["base_config"])
+    del config["cppdock"]["base_config"]
+    config_paths.insert(0, base_config_path)
+    base_config = load_config_file_json(base_config_path)
+
+    # merge cppdock section
+    cppdock_section = {}
+    cppdock_section.update(base_config["cppdock"])
+    cppdock_section.update(config["cppdock"])
+    config["cppdock"] = cppdock_section
+    platforms = {}
+    platforms.update(base_config.get("platforms", {}))
+
+    for platform_name in config.get("platforms", {}):
+        platforms[platform_name] = merge_platform_config(platform_name, base_config, config)
+
+    config["platforms"] = platforms
+    return config
+
+def merge_platform_config(platform_name, base_config, config):
+    result = {}
+    platform = config["platforms"].get(platform_name, {})
+    base_platform = base_config.get("platforms", {}).get(platform_name, {})
+
+    result.update(base_platform)
+    result.update(platform)
+    result["deps"] = []
+    result["deps"].append(base_platform.get("deps", []))
+    result["deps"].append(platform.get("deps", []))
+    return result
+
+def process_config_replace_deps(config):
+    # TODO read "replace_deps" to replace all deps with a
+    #      specified name or a dep with a specific id
+    #      not sure if this is desirable yet
+    return config
+
+def lock_config_file_deps(config, json_file_path):
+    if 'platforms' not in config:
+        return config
     for platform, settings in config['platforms'].items():
         check_base_image_conflict(settings)
 
@@ -404,14 +491,6 @@ def load_config_file(json_file_path):
 
     write_config_file(config, json_file_path)
     return config
-
-def write_config_file(config, json_file_path):
-    try:
-        with open(json_file_path, 'wb') as fh:
-            json.dump(config, fh, indent=2, separators=(',', ': '))
-            fh.write('\n')
-    except:
-        warnings.warn('WARNING: Unable to write to json file')
 
 def lock_item_json(item):
     current_sha = get_current_sha_with_comment(item)
@@ -576,7 +655,7 @@ def is_platform_service(*argv):
     return platform_type.endswith('service')
 
 def get_project_name(config):
-    return config['cppdock']['name']
+    return config['name']
 
 def make_deps_dockerfile(config, platform_name):
     platform_type = get_platform_type(config, platform_name)
@@ -798,7 +877,7 @@ def get_dev_compose_file_service(config, platform_name, domain, tag):
 #def get_compose_file_external_service(config, platform_name)
 #    platform = get_platform(config, platform_name)
 #    assert is_platform_service(platform.type), 'External platform must be type "service"'
-    # TODO copy key/value all except "tag" and "revision" 
+    # TODO copy key/value all except "tag" and "revision"
     # TODO call this function when building dev_compose_file
 
 def get_build_tag_name(config, platform_name, tag):
@@ -824,12 +903,6 @@ def get_stack_name(config, sub_name):
     assert sub_name
     name += '_' + sub_name
     return name
-
-def get_project_name(config):
-    try:
-        return config['cppdock']['name']
-    except:
-        raise ValueError('Project name not found in cppdock.json.')
 
 def get_registry(config, image_type):
     assert(image_type in ['build', 'dev', 'release', 'service'])
@@ -1189,6 +1262,5 @@ def import_ssl_certificate(domain, key_data, crt_data):
     p.communicate(crt_data)
     if p.returncode != 0:
 	raise RuntimeError('Failed to create docker secret for {}'.format(crt_name))
-
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
