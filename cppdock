@@ -655,7 +655,7 @@ def is_platform_service(*argv):
     return platform_type.endswith('service')
 
 def get_project_name(config):
-    return config['name']
+    return config['cppdock']['name']
 
 def make_deps_dockerfile(config, platform_name):
     platform_type = get_platform_type(config, platform_name)
@@ -842,13 +842,26 @@ def get_dev_compose_file_service(config, platform_name, domain, tag):
     platform = get_platform_config(config, platform_name)
     service_name = get_service_name(config, platform_name)
     image_tag = get_dev_tag_name(config, platform_name, tag)
-    command = platform.get('dev_command') or 'tail -f /dev/null'
+    service_target = platform.get('service_target')
+    target = platform.get('target') or service_target
+    tail = 'tail -f /dev/null'
+    build_type = 'debug'
+
+    # use tail to keep a non-service alive
+    if service_target:
+        command = "cmake --build . --target " + service_target
+    elif target:
+        command = "cmake --build . --target " + target + ' && ' + tail
+    else:
+        command = tail
+
     command = """ bash -c "cmake \\
-                -DCMAKE_BUILD_TYPE=Debug \\
+                -DCMAKE_BUILD_TYPE={build_type} \\
                 -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \\
                 /opt/src \\
               && {command}"
-    """.format(command = command)
+    """.format(command      = command,
+               build_type   = build_type)
 
     web_root = platform.get('web_root')
     if web_root:
