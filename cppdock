@@ -17,8 +17,6 @@ import distutils.dir_util
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
-target_registry = os.getenv('CPPDOCK_TARGET_REGISTRY') or '127.0.0.1:5000';
-dev_registry = os.getenv('CPPDOCK_DEV_REGISTRY') or '127.0.0.1:5000';
 cluster_build_nodes = None
 
 def remove_none(obj):
@@ -164,10 +162,8 @@ def parse_args_init_dev_service(args):
                                         action    = 'store_true',
                                         help      = 'Run only as an interactive shell')
     group  = parser.add_argument_group('required arguments')
-    group.add_argument('platform',      help      = 'Token for target platform')
-
-    #TODO Add a --shell-only option to be called by `cppdock dev ...`
-    assert not args.shell_only, "--shell-only option not implemented"
+    group.add_argument('build_type',    help      = 'Build type')
+    group.add_argument('target',        help      = 'Build target name')
 
     return parser.parse_args(args)
 
@@ -219,57 +215,41 @@ def command_init(args):
 
 def command_build(args):
     config = load_config_file_with_args(args)
-    tag = args.tag
-
-    if not tag:
-        tag = args.domain.split('.', 1)[0] if args.domain else 'dev'
 
     platforms = [args.platform] if args.platform else get_all_platforms(config)
     for platform in platforms:
-        make_build_image(config, platform, tag, args.print_only)
+        make_build_image(config, platform, args.print_only)
 
     if args.domain:
-        make_nginx_proxy_image(config, tag, args.domain, args.print_only)
+        make_nginx_proxy_image(config, args.domain, args.print_only)
 
-def make_build_image(config, platform, tag, print_only):
+def make_build_image(config, platform, print_only):
     if is_platform_service(config, platform):
         return
 
-    dockerfile = make_deps_dockerfile(config, platform)
-
-    if print_only:
-        tag_name = get_build_tag_name(config, platform, tag)
-        print '\n\n\n###### Docker Image: ' + tag_name
-        print dockerfile
-    else:
-        make_base_image_dockerfile(config, platform)
-        make_dep_image(config, platform, tag, dockerfile)
+    make_base_image(config, platform, print_only)
+    make_dep_image(config, platform, print_only)
 
 def command_build_nginx_proxy(args):
     config = load_config_file_with_args(args)
-    tag = args.domain.split('.', 1)[0]
-    make_nginx_proxy_image(config, tag, args.domain, args.print_only)
+    make_nginx_proxy_image(config, args.domain, args.print_only)
 
-def make_nginx_proxy_image(config, tag, domain, print_only):
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
+def make_nginx_proxy_image(config, domain, print_only):
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
     conf_data = get_nginx_proxy_conf(config, domain)
     dockerfile = """
     FROM nginx:alpine
         RUN echo $'{conf_data}' > /etc/nginx/nginx.conf
     """.format(conf_data = conf_data.replace('\n', '\\n\\\n'))
 
-    if (print_only):
-        print '\n\n\n###### Docker Image: ' + tag_name
-        print dockerfile
-    else:
-        make_docker_image(tag_name, dockerfile)
+    make_docker_image(tag_name, dockerfile, print_only)
 
 def command_dev(args):
     config = load_config_file_with_args(args)
     platform_name = args.platform
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
-    make_dev_image(config, platform_name, 'dev')
-    run_dev_image(config, platform_name, ports_arg, 'dev')
+    make_dev_image(config, platform_name)
+    run_dev_image(config, platform_name, ports_arg)
 
 def command_dev_cluster(args):
     domain      = args.domain
@@ -297,16 +277,16 @@ def command_dev_cluster(args):
         for platform_name in get_all_platforms(config):
             if get_platform_type(config, platform_name).endswith('service'):
                 continue
-            tag_name = get_dev_tag_name(config, platform_name, tag)
-            make_dev_image(config, platform_name, tag)
+            tag_name = get_dev_tag_name(config, platform_name)
+            make_dev_image(config, platform_name)
             print "Pushing dev image: {}".format(tag_name)
             subprocess.check_output(['docker', 'push', tag_name])
 
-            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
+            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
             print "Pushing nginx_proxy image :{}".format(nginx_proxy_tag_name)
             subprocess.check_output(['docker', 'push', nginx_proxy_tag_name])
 
-        run_stack_deploy(config, stack_name, domain, tag)
+        run_stack_deploy(config, stack_name, domain)
 
         print "Finished deploying {stack_name}\n".format(stack_name = stack_name)
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
@@ -326,6 +306,10 @@ def command_dev_registry(args):
 
 
 def command_install_dep(args):
+    # This called inside a container so config is not allowed
+    # Even if we add a merged config file to the container we
+    # do not want it available at this stage or things will
+    # be rebuilt for every config change
     check_sysroot()
     url = make_archive_url(args.repo, args.branch)
     input = urllib2.urlopen(url)
@@ -377,10 +361,8 @@ def command_install_src(args):
     distutils.dir_util.remove_tree(base_src_dir);
 
 def command_init_dev_service(args):
-    config = load_config_file_with_args(args)
-    assert args.platform in get_all_platforms(config), "Invalid platform name"
-    assert not get_platform_type(config, args.platform), "Invalid platform"
-    run_dev_service_target(config, args.platform)
+    # command run in container so config is not allowed
+    run_dev_service_target(args.build_type, args.target, args.shell_only)
 
 def install_deps_platform(platform, items):
     for i in range(len(items)):
@@ -404,8 +386,11 @@ def load_config_file(json_file_path):
     config = process_config_replace_deps(config)
 
     source_path = os.path.dirname(config_paths[0])
-    source_path = config["cppdock"].get("source_path", source_path)
-    config["cppdock"]["source_path"] = source_path
+    cppdock = config['cppdock']
+    source_path = cppdock.get("source_path", source_path)
+    cppdock["source_path"] = source_path
+    cppdock["cppdock_image"] = cppdock.get("cppdock_image",
+                                           "ricejasonf/cppdock")
     return config
 
 def load_config_file_json(json_file_path):
@@ -564,20 +549,44 @@ def make_archive_url(repo, branch):
 def get_base_image_dockerfile(config, platform_name):
     return config['platforms'][platform_name].get('base_image_dockerfile')
 
-def make_base_image_dockerfile(config, platform_name):
+def get_user_base_tag_name(config, platform_name):
+    if get_base_image_dockerfile(config, platform_name):
+        return get_image_tag_name(config, platform_name, 'user_base')
+
+    tag_name =  config['platforms'][platform_name].get('base_image')
+    if tag_name:
+        return tag_name
+
+    platform_type = get_platform_type(config, platform_name)
+    return get_config_option(config, 'platform_' + platform_type)
+
+def get_base_image_dockerfile_data(config, platform_name):
+    tag_name = get_user_base_tag_name(config, platform_name)
+    cppdock_tag_name = config['cppdock']['cppdock_image']
+
+    return """
+FROM {tag_name}
+    # installs cppdock in base image
+    COPY --from={cppdock_tag_name} /opt/install/ /usr/local
+    """.format(tag_name = tag_name,
+               cppdock_tag_name = cppdock_tag_name)
+
+def make_base_image(config, platform_name, print_only):
+    make_base_image_dockerfile(config, platform_name, print_only)
+    dockerfile = get_base_image_dockerfile_data(config, platform_name)
+    tag_name = get_base_tag_name(config, platform_name)
+    make_docker_image(tag_name, dockerfile, print_only)
+
+def make_base_image_dockerfile(config, platform_name, print_only):
     base_image_dockerfile = get_base_image_dockerfile(config, platform_name)
 
     if base_image_dockerfile:
         dockerfile = "./{0}".format(base_image_dockerfile)
-        tag_name = "{0}_platform:latest".format(get_project_name(config))
+        tag_name = get_user_base_tag_name(config, platform_name)
 
-        p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file='+ dockerfile, '.'], stdin=subprocess.PIPE)
-        out, err = p.communicate('')
-
-        if p.returncode != 0:
-            print """
-    FAILURE
-            """
+        with open(dockerfile, 'r') as file:
+            dockerfile_data = file.read()
+        make_docker_image(tag_name, dockerfile_data, print_only)
 
 def find_recipe(platform, repo):
     repo = repo.replace('/', '-')
@@ -620,10 +629,19 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_dep_image(config, platform_name, tag, dockerfile):
-    tag_name = get_build_tag_name(config, platform_name, tag)
-    (returncode, out, err) = make_docker_image(tag_name, dockerfile)
-    if returncode == 0:
+def make_dep_image(config, platform_name, print_only):
+    dockerfile = make_deps_dockerfile(config, platform_name)
+    tag_name = get_build_tag_name(config, platform_name)
+    make_docker_image(tag_name, dockerfile, print_only)
+
+def make_docker_image(tag_name, dockerfile_data, print_only = False):
+    if print_only:
+        print '###### Docker Image: ' + tag_name + ' ######'
+        print dockerfile_data
+        return
+    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
+    out, err = p.communicate(dockerfile_data)
+    if p.returncode == 0:
         print "Finished building {0}.".format(tag_name)
     else:
         print """
@@ -633,9 +651,6 @@ def make_dep_image(config, platform_name, tag, dockerfile):
         """.format(tag_name)
         sys.exit(1)
 
-def make_docker_image(tag_name, dockerfile_data):
-    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
-    out, err = p.communicate(dockerfile_data)
     return (p.returncode, out, err)
 
 def get_platform_type(config, platform_name):
@@ -659,30 +674,26 @@ def get_project_name(config):
 
 def make_deps_dockerfile(config, platform_name):
     platform_type = get_platform_type(config, platform_name)
-    cppdock_image = get_base_image(config, platform_name) or get_config_option(config, 'platform_' + platform_type)
+    # move this to be used when building the base image
+    #base_image = get_base_image(config, platform_name) or get_config_option(config, 'platform_' + platform_type)
+    base_image = get_base_tag_name(config, platform_name)
     deps = get_deps_from_config(config, platform_name)
     deps_stages = ''
     deps_imports = ''
 
     for dep in deps:
-        deps_stages += string.join([make_deps_stage(cppdock_image, platform_name, dep)])
+        deps_stages += string.join([make_deps_stage(base_image, platform_name, dep)])
         deps_imports += make_deps_import(platform_name, dep[-1][2])
 
     return """
 {0}
 FROM {1}
 {2}
-""".format(deps_stages, cppdock_image, deps_imports)
-
-def get_base_image(config, platform_name):
-    if 'base_image_dockerfile' in config['platforms'][platform_name]:
-        return '{0}_platform'.format(get_project_name(config))
-    else:
-        return config['platforms'][platform_name].get('base_image')
+""".format(deps_stages, base_image, deps_imports)
 
 # deprecated
 def make_deps_dockerfile_stageless(config, platform):
-    cppdock_image  = get_config_option(config, 'platform_' + platform)
+    base_image  = get_config_option(config, 'platform_' + platform)
     deps = get_deps_from_config(config, platform)
     deps_stages = string.join([make_install_dep(x, y, z, zz) for x, y, z, zz in deps])
 
@@ -693,11 +704,11 @@ FROM {0} as build_all
 FROM {2}
 
     COPY --from=build_all /opt/install /opt/sysroot
-""".format(cppdock_image, deps_stages, cppdock_image)
+""".format(base_image, deps_stages, base_image)
 
-def make_deps_stage(cppdock_image, platform_name, deps):
+def make_deps_stage(base_image, platform_name, deps):
     copy_recipes_term = ""
-    build_image = cppdock_image
+    build_image = base_image
 
     # only one dep that is source: docker does not use make_install_dep
 
@@ -760,19 +771,20 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
-def make_dev_image(config, platform_name, tag):
-    build_tag_name = get_build_tag_name(config, platform_name, tag)
-    dev_tag_name = get_dev_tag_name(config, platform_name, tag)
-    build_type = os.environ.get('BUILD_TYPE', None) or default_build_type(config, platform_name)
+def make_dev_image(config, platform_name):
+    build_tag_name = get_build_tag_name(config, platform_name)
+    dev_tag_name = get_dev_tag_name(config, platform_name)
+    # TODO get build type from config['cppdock']['build_type']
+    build_type = 'debug'
+    target = get_dev_service_target(config, platform_name)
+
     dockerfile = """
-FROM {0}
+FROM {build_tag_name}
     WORKDIR /opt/build
-    CMD cmake \
-        -DCMAKE_BUILD_TYPE={1} \
-        -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \
-        /opt/src \
-        && /bin/bash
-""".format(build_tag_name, build_type)
+    CMD cppdock init_dev_service --shell-only {build_type} {target}
+""".format(build_tag_name = build_tag_name,
+           build_type = build_type,
+           target = target)
 
     p = subprocess.Popen(['docker', 'build', '--tag=' + dev_tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile)
@@ -785,14 +797,14 @@ FROM {0}
         """.format(dev_tag_name)
         sys.exit(1)
 
-def run_dev_image(config, platform_name, ports_arg, tag):
-    tag_name = get_dev_tag_name(config, platform_name, tag)
+def run_dev_image(config, platform_name, ports_arg):
+    tag_name = get_dev_tag_name(config, platform_name)
     pwd = os.getcwd()
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
-def run_stack_deploy(config, stack_name, domain, tag):
+def run_stack_deploy(config, stack_name, domain):
     # docker stack deploy is already idempotent
-    compose_file_data = get_dev_compose_file(config, domain, tag)
+    compose_file_data = get_dev_compose_file(config, domain)
     p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
     p.communicate(input=compose_file_data)
     if p.returncode != 0:
@@ -811,9 +823,9 @@ def run_stack_service_terminal(config, stack_name, platform_name):
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
 
-def get_dev_compose_file(config, domain, tag):
+def get_dev_compose_file(config, domain):
     platform_names = get_all_platforms(config)
-    services = [get_dev_compose_file_service(config, platform_name, domain, tag) for platform_name in platform_names]
+    services = [get_dev_compose_file_service(config, platform_name, domain) for platform_name in platform_names]
     crt = '{}.crt'.format(domain)
     key = '{}.key'.format(domain)
 
@@ -822,7 +834,7 @@ def get_dev_compose_file(config, domain, tag):
         key: { 'external': True }
     }
 
-    services.append(get_nginx_proxy_service(config, domain, tag))
+    services.append(get_nginx_proxy_service(config, domain))
     services_dict = {}
     for x in services:
         services_dict.update(x)
@@ -838,30 +850,16 @@ def get_dev_compose_file(config, domain, tag):
 
     return json.dumps(remove_none(result), indent=2, separators=(',', ': '))
 
-def get_dev_compose_file_service(config, platform_name, domain, tag):
+def get_dev_compose_file_service(config, platform_name, domain):
     platform = get_platform_config(config, platform_name)
     service_name = get_service_name(config, platform_name)
-    image_tag = get_dev_tag_name(config, platform_name, tag)
-    service_target = platform.get('service_target')
-    target = platform.get('target') or service_target
-    tail = 'tail -f /dev/null'
+    image_tag = get_dev_tag_name(config, platform_name)
+    target = get_dev_service_target(config, platform_name)
     build_type = 'debug'
 
-    # use tail to keep a non-service alive
-    if service_target:
-        command = "cmake --build . --target " + service_target
-    elif target:
-        command = "cmake --build . --target " + target + ' && ' + tail
-    else:
-        command = tail
-
-    command = """ bash -c "cmake \\
-                -DCMAKE_BUILD_TYPE={build_type} \\
-                -DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake' \\
-                /opt/src \\
-              && {command}"
-    """.format(command      = command,
-               build_type   = build_type)
+    command = "cppdock init_dev_service {build_type} {target}".format(
+            build_type = build_type,
+            target = target)
 
     web_root = platform.get('web_root')
     if web_root:
@@ -893,22 +891,23 @@ def get_dev_compose_file_service(config, platform_name, domain, tag):
     # TODO copy key/value all except "tag" and "revision"
     # TODO call this function when building dev_compose_file
 
-def get_build_tag_name(config, platform_name, tag):
-    return get_image_tag_name(config, platform_name, "build", tag)
+def get_build_tag_name(config, platform_name):
+    return get_image_tag_name(config, platform_name, "build")
 
-def get_dev_tag_name(config, platform_name, tag):
-    return get_image_tag_name(config, platform_name, "dev", tag)
+def get_dev_tag_name(config, platform_name):
+    return get_image_tag_name(config, platform_name, "dev")
 
-def get_image_tag_name(config, platform_name, image_type, tag):
-    assert tag
-    registry = get_registry(config, image_type)
-    assert(image_type in ['build', 'dev', 'release', 'service'])
-    return "{registry}{project}-{platform}{image_type}:{tag}".format(
+def get_base_tag_name(config, platform_name):
+    return get_image_tag_name(config, platform_name, 'base')
+
+def get_image_tag_name(config, platform_name, image_type):
+    registry = config['cppdock'].get('registry')
+    assert(image_type in ['build', 'dev', 'release', 'service', 'base', 'user_base'])
+    return "{registry}{project}-{platform}{image_type}".format(
         registry    = registry + '/' if registry else '',
         project     = get_project_name(config),
         platform    = platform_name,
         image_type  = '-' + image_type if image_type != 'release' else '',
-        tag         = tag,
     )
 
 def get_stack_name(config, sub_name):
@@ -916,15 +915,6 @@ def get_stack_name(config, sub_name):
     assert sub_name
     name += '_' + sub_name
     return name
-
-def get_registry(config, image_type):
-    assert(image_type in ['build', 'dev', 'release', 'service'])
-    if image_type == 'build':
-        return None
-    elif image_type == 'dev':
-        return dev_registry
-    else:
-        return target_registry
 
 def default_build_type(config, platform_name):
     if config['platforms'][platform_name]['type'] == 'emscripten' :
@@ -936,38 +926,52 @@ def get_all_platforms(config):
     return config['platforms'].keys()
 
 def get_platform_config(config, platform_name):
-    # TODO maybe merge overrides for dev or something
     return config['platforms'][platform_name]
 
-def run_dev_service_target_init(config):
-    p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=Debug',
-                          "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake",
-                          '/opt/src'],
-                         cwd = '/opt/build')
+def get_dev_service_target(config, platform_name):
+    platform = get_platform_config(config, platform_name)
+    service_target = platform.get('service_target')
+    return platform.get('target') or service_target
+
+def run_dev_service_cmake(build_type):
+    if not os.path.isfile('/opt/build/CMakeCache.txt'):
+        p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=' + build_type,
+                              "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake'",
+                              '/opt/src'],
+                             cwd = '/opt/build')
+    else:
+        p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=' + build_type,
+                              '.'],
+                             cwd = '/opt/build')
     p.communicate('')
     return p.returncode == 0
 
-def run_dev_service_target(config, platform):
+def run_dev_service_target(build_type, target, shell_only = False):
     # This should run in a docker container
-    # Initializes cmake if needed
+    # Initializes CMake if needed
+
+    if shell_only:
+        run_dev_service_cmake(build_type)
+        p = subprocess.call('/bin/bash')
+        return
 
     p = None
-    if not os.path.isfile('/opt/build/CMakeCache.txt') and run_dev_service_target_init(config):
-        p = subprocess.Popen(['cmake', '--build', '.',
-                              '--target',
-                              "cppdock_dev_service.{}".format(platform)],
+    command = "cmake --build . --target " + target
+    if run_dev_service_cmake(build_type) and target:
+        p = subprocess.Popen(['cmake', '--build', '.', '--target', target],
                              cwd = '/opt/build')
         p.communicate('')
 
-    # Make the cppdock_dev_service target or just hang out
+    # Make the service target and just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
 
+    if p.returncode != 0:
+        print "Service exited with error {}.".format(p.returncode)
 
-    # if it fails or doesn't run then just hang out so the container stays alive
+    # hang out so the container stays alive
 
-    if not (p and p.returncode == 0):
-        p = subprocess.Popen(['tail', '-f', '/dev/null'])
-        p.communicate('')
+    p = subprocess.Popen(['tail', '-f', '/dev/null'])
+    p.communicate('')
 
 def cluster_get_worker_token():
     try:
@@ -1205,10 +1209,10 @@ def get_nginx_location_websocket(uri, service_name, port):
                    service_name  = service_name,
                    port          = port)
 
-def get_nginx_proxy_service(config, domain, tag):
+def get_nginx_proxy_service(config, domain):
     service_name_fn = lambda x : get_service_name(config, x)
     service_names = map(service_name_fn, get_all_platforms(config))
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service', tag)
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
     return {
         'nginx_proxy': {
             'image': tag_name,

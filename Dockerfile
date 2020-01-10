@@ -6,6 +6,6 @@ RUN  apt-get update \
   && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
   && echo 'set hlsearch' >> /root/.vimrc
 
-COPY cppdock /usr/local/bin
+COPY cppdock /usr/local/bin/
+COPY cppdock /opt/install/bin/
 COPY recipes/ /root/.cppdock_recipes
-
