@@ -263,7 +263,7 @@ def command_dev_cluster(args):
     if (args.stop):
         subprocess.check_output(['docker', 'stack', 'rm', stack_name])
     elif (args.print_only):
-        print get_dev_compose_file(config, domain, tag)
+        print get_dev_compose_file(config, domain)
     else:
         nodes = cluster_get_build_node_ids()
         if is_cluster_mode():
@@ -394,6 +394,9 @@ def load_config_file(json_file_path):
     return config
 
 def load_config_file_json(json_file_path):
+    if os.path.isdir(json_file_path):
+        json_file_path = os.path.join(json_file_path, 'cppdock.json')
+
     if not os.path.isfile(json_file_path):
         raise ValueError('Config file not found: ' + json_file_path)
     stream = file(json_file_path, 'r')
@@ -826,15 +829,20 @@ def run_stack_service_terminal(config, stack_name, platform_name):
 def get_dev_compose_file(config, domain):
     platform_names = get_all_platforms(config)
     services = [get_dev_compose_file_service(config, platform_name, domain) for platform_name in platform_names]
+    secrets = config.get('secrets', {})
+    secrets.update(get_secret_files());
+
+
+    # TODO break out nginx_proxy stuff
+    #      to get_dev_compose_file_service
     crt = '{}.crt'.format(domain)
     key = '{}.key'.format(domain)
-
-    secrets = {
+    secrets.update({
         crt: { 'external': True },
         key: { 'external': True }
-    }
-
+    })
     services.append(get_nginx_proxy_service(config, domain))
+
     services_dict = {}
     for x in services:
         services_dict.update(x)
@@ -869,14 +877,16 @@ def get_dev_compose_file_service(config, platform_name, domain):
     remote_pwd = cluster_get_sync_path(pwd, 'src')
     src_mount_path = remote_pwd if is_cluster_mode() else pwd
     src_mount = '{src_mount_path}:/opt/src:ro'.format(src_mount_path = src_mount_path)
+    environment = { 'DOMAIN': domain }
+    environment.update(platform.get('environment', {}))
+    secrets = platform.get('secrets', [])
 
     return {
         service_name: {
             'image': image_tag,
             'command': command,
-            'environment': {
-                'DOMAIN': domain
-            },
+            'environment': environment,
+            'secrets': secrets,
             'volumes': [
                 src_mount,
                 '/opt/build',
@@ -1279,5 +1289,21 @@ def import_ssl_certificate(domain, key_data, crt_data):
     p.communicate(crt_data)
     if p.returncode != 0:
 	raise RuntimeError('Failed to create docker secret for {}'.format(crt_name))
+
+def get_secret_files():
+    # We never want to look in the source_path for secrets
+    # so this is a valid use of getcwd
+    secrets_dir = os.path.join(os.getcwd(), 'cppdock_secrets')
+    if not os.path.isdir(secrets_dir):
+        return {}
+    names = [f for f in os.listdir(secrets_dir)]
+    secrets = {}
+    for name in names:
+        path = os.path.abspath(os.path.join(secrets_dir, name))
+        if os.path.isfile(path):
+            secrets[name] = { 'file': path }
+
+    return secrets
+    
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
