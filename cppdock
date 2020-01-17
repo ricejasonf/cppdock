@@ -253,9 +253,8 @@ def command_dev(args):
 
 def command_dev_cluster(args):
     domain      = args.domain
-    tag         = args.domain.split('.', 1)[0]
     config      = load_config_file_with_args(args)
-    stack_name  = get_stack_name(config, tag)
+    stack_name  = get_stack_name(config)
 
     if args.gen_certs:
         import_ssl_certificate(*generate_self_signed_ssl_certificate(domain))
@@ -272,19 +271,17 @@ def command_dev_cluster(args):
         else:
             print "Running in LOCAL mode..."
 
-        cluster_sync_source(nodes)
-        # builds and pushes the dev images which should be to the dev_registry
+        cluster_sync_source(config, nodes)
+        # builds, tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
+            # TODO push service images too
             if get_platform_type(config, platform_name).endswith('service'):
                 continue
-            tag_name = get_dev_tag_name(config, platform_name)
-            make_dev_image(config, platform_name)
-            print "Pushing dev image: {}".format(tag_name)
-            subprocess.check_output(['docker', 'push', tag_name])
+            tag_name = make_dev_image(config, platform_name)
+            push_docker_image(config, tag_name)
 
             nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
-            print "Pushing nginx_proxy image :{}".format(nginx_proxy_tag_name)
-            subprocess.check_output(['docker', 'push', nginx_proxy_tag_name])
+            push_docker_image(config, nginx_proxy_tag_name)
 
         run_stack_deploy(config, stack_name, domain)
 
@@ -385,7 +382,10 @@ def load_config_file(json_file_path):
     config = merge_base_config(config, config_paths)
     config = process_config_replace_deps(config)
 
-    source_path = os.path.dirname(config_paths[0])
+    source_path = config_paths[0]
+    if not os.path.isdir(source_path):
+        source_path = os.path.dirname(source_path)
+
     cppdock = config['cppdock']
     source_path = cppdock.get("source_path", source_path)
     cppdock["source_path"] = source_path
@@ -455,8 +455,8 @@ def merge_platform_config(platform_name, base_config, config):
     result.update(base_platform)
     result.update(platform)
     result["deps"] = []
-    result["deps"].append(base_platform.get("deps", []))
-    result["deps"].append(platform.get("deps", []))
+    result["deps"] += base_platform.get("deps", [])
+    result["deps"] += platform.get("deps", [])
     return result
 
 def process_config_replace_deps(config):
@@ -656,6 +656,15 @@ def make_docker_image(tag_name, dockerfile_data, print_only = False):
 
     return (p.returncode, out, err)
 
+def push_docker_image(config, tag_name):
+    # tags with registry and pushes
+    registry = get_registry(config)
+    rtag_name = registry + '/' + tag_name
+    subprocess.check_output(['docker', 'tag', tag_name, rtag_name])
+    subprocess.check_output(['docker', 'push', rtag_name])
+    print "Finished pushing {0}".format(rtag_name)
+    return rtag_name
+
 def get_platform_type(config, platform_name):
     try:
         return config['platforms'][platform_name]['type']
@@ -800,9 +809,11 @@ FROM {build_tag_name}
         """.format(dev_tag_name)
         sys.exit(1)
 
+    return dev_tag_name
+
 def run_dev_image(config, platform_name, ports_arg):
     tag_name = get_dev_tag_name(config, platform_name)
-    pwd = os.getcwd()
+    pwd = config['cppdock']['source_path']
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
 def run_stack_deploy(config, stack_name, domain):
@@ -873,7 +884,7 @@ def get_dev_compose_file_service(config, platform_name, domain):
     if web_root:
         web_root = "web_root:{0}".format(web_root)
 
-    pwd = os.getcwd()
+    pwd = config['cppdock']['source_path']
     remote_pwd = cluster_get_sync_path(pwd, 'src')
     src_mount_path = remote_pwd if is_cluster_mode() else pwd
     src_mount = '{src_mount_path}:/opt/src:ro'.format(src_mount_path = src_mount_path)
@@ -911,20 +922,15 @@ def get_base_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, 'base')
 
 def get_image_tag_name(config, platform_name, image_type):
-    registry = config['cppdock'].get('registry')
     assert(image_type in ['build', 'dev', 'release', 'service', 'base', 'user_base'])
-    return "{registry}{project}-{platform}{image_type}".format(
-        registry    = registry + '/' if registry else '',
+    return "{project}-{platform}{image_type}".format(
         project     = get_project_name(config),
         platform    = platform_name,
         image_type  = '-' + image_type if image_type != 'release' else '',
     )
 
-def get_stack_name(config, sub_name):
-    name = get_project_name(config)
-    assert sub_name
-    name += '_' + sub_name
-    return name
+def get_stack_name(config):
+    return get_project_name(config)
 
 def default_build_type(config, platform_name):
     if config['platforms'][platform_name]['type'] == 'emscripten' :
@@ -975,7 +981,7 @@ def run_dev_service_target(build_type, target, shell_only = False):
     # Make the service target and just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
 
-    if p.returncode != 0:
+    if p and p.returncode != 0:
         print "Service exited with error {}.".format(p.returncode)
 
     # hang out so the container stays alive
@@ -1008,9 +1014,9 @@ def cluster_get_sync_path(path, kind):
                                                    kind = kind)
 
 # rsyncs everything in pwd to nodes in cluster
-def cluster_sync_source(nodes):
+def cluster_sync_source(config, nodes):
     nodes = cluster_get_build_node_ids()
-    pwd = os.getcwd()
+    pwd = config['cppdock']['source_path']
     for node in nodes:
         path = cluster_get_sync_path(pwd, 'src')
         p = subprocess.Popen(['docker-machine', 'ssh', node,
@@ -1243,7 +1249,7 @@ def is_cluster_mode():
     return len(cluster_get_build_node_ids()) > 0
 
 def get_service_name(config, platform_name):
-    return get_project_name(config) + '_' + platform_name
+    return platform_name
 
 def check_secret(name):
     p = subprocess.Popen(['docker', 'secret', 'inspect', name])
@@ -1304,6 +1310,11 @@ def get_secret_files():
             secrets[name] = { 'file': path }
 
     return secrets
+
+def get_registry(config):
+    registry = config['cppdock'].get('registry')
+    # TODO resolve "docker-machine:{name}"
+    return registry or '127.0.0.1:5000'
     
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
