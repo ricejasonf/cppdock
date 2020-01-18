@@ -438,8 +438,9 @@ def merge_base_config(config, config_paths):
     cppdock_section.update(base_config["cppdock"])
     cppdock_section.update(config["cppdock"])
     config["cppdock"] = cppdock_section
+
+    # only include platforms specified in current config
     platforms = {}
-    platforms.update(base_config.get("platforms", {}))
 
     for platform_name in config.get("platforms", {}):
         platforms[platform_name] = merge_platform_config(platform_name, base_config, config)
