@@ -18,6 +18,7 @@ root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
 cluster_build_nodes = None
+service_configs = None
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -275,7 +276,7 @@ def command_dev_cluster(args):
         # builds, tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
             # TODO push service images too
-            if get_platform_type(config, platform_name).endswith('service'):
+            if is_platform_service(config, platform_name):
                 continue
             tag_name = make_dev_image(config, platform_name)
             push_docker_image(config, tag_name)
@@ -380,6 +381,7 @@ def load_config_file(json_file_path):
     config = lock_config_file_deps(config, json_file_path)
     config = normalize_config_paths(config)
     config = merge_base_config(config, config_paths)
+    config = merge_service_configs(config)
     config = process_config_replace_deps(config)
 
     source_path = config_paths[0]
@@ -455,9 +457,10 @@ def merge_platform_config(platform_name, base_config, config):
 
     result.update(base_platform)
     result.update(platform)
-    result["deps"] = []
-    result["deps"] += base_platform.get("deps", [])
-    result["deps"] += platform.get("deps", [])
+    if config.get('deps') or base_config.get('deps'):
+        result["deps"] = []
+        result["deps"] += base_platform.get("deps", [])
+        result["deps"] += platform.get("deps", [])
     return result
 
 def process_config_replace_deps(config):
@@ -680,7 +683,7 @@ def is_platform_service(*argv):
     elif len(argv) == 2:
         [config, platform_name] = argv
         platform_type = get_platform_type(config, platform_name)
-    return platform_type.endswith('service')
+    return platform_type == 'service' or platform_type.startswith('service:')
 
 def get_project_name(config):
     return config['cppdock']['name']
@@ -872,6 +875,14 @@ def get_dev_compose_file(config, domain):
 
 def get_dev_compose_file_service(config, platform_name, domain):
     platform = get_platform_config(config, platform_name)
+    if is_platform_service(config, platform_name):
+        result = {}
+        result.update(platform)
+        del result['type']
+        return { platform_name: result }
+
+    # generate service definition for dev images
+
     service_name = get_service_name(config, platform_name)
     image_tag = get_dev_tag_name(config, platform_name)
     target = get_dev_service_target(config, platform_name)
@@ -906,12 +917,6 @@ def get_dev_compose_file_service(config, platform_name, domain):
             ]
         }
     }
-
-#def get_compose_file_external_service(config, platform_name)
-#    platform = get_platform(config, platform_name)
-#    assert is_platform_service(platform.type), 'External platform must be type "service"'
-    # TODO copy key/value all except "tag" and "revision"
-    # TODO call this function when building dev_compose_file
 
 def get_build_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, "build")
@@ -1065,7 +1070,7 @@ def get_nginx_proxy_conf(config, domain):
     }}""".format(domain = domain)
 
     for platform_name in get_all_platforms(config):
-        if get_platform_type(config, platform_name) == 'service':
+        if is_platform_service(config, platform_name):
             continue;
         locations += get_nginx_proxy_conf_locations(config, platform_name)
         upstreams += get_nginx_proxy_conf_upstreams(config, platform_name)
@@ -1316,6 +1321,51 @@ def get_registry(config):
     registry = config['cppdock'].get('registry')
     # TODO resolve "docker-machine:{name}"
     return registry or '127.0.0.1:5000'
-    
+
+def get_service_config(service_type):
+    # default config stuff for services with type
+    # service:{service_type}
+    global service_configs
+    if service_configs == None:
+        service_configs = {
+            'nginx_proxy': {},
+            'postgres': {
+                "image": "postgres",
+                "environment": {
+                    "POSTGRES_USER_FILE": "/run/secrets/POSTGRES_USER",
+                    "POSTGRES_PASSWORD_FILE": "/run/secrets/POSTGRES_PASSWORD"
+                },
+                "secrets": [
+                    "POSTGRES_USER",
+                    "POSTGRES_PASSWORD"
+                ]
+            }
+        }
+    return service_configs.get(service_type)
+
+def get_service_type(config, platform_name):
+    type = get_platform_type(config, platform_name)
+    if type == 'service' or not type.startswith('service:'):
+        return None
+    return type.split(':', 1)[1]
+
+def merge_service_config(config, platform_name):
+    type = get_platform_type(config, platform_name)
+    service_type = get_service_type(config, platform_name)
+    platform = get_platform_config(config, platform_name)
+    if not service_type:
+        return platform
+    service_config = get_service_config(service_type)
+    assert service_config != None, "Not a valid service_type in service ({})".format(type)
+    result = {}
+    result.update(service_config)
+    result.update(platform)
+    return result
+
+def merge_service_configs(config):
+    platforms = config['platforms']
+    for platform_name in config.get("platforms", {}):
+        platforms[platform_name] = merge_service_config(config, platform_name)
+    return config
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
