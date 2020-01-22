@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 from collections import OrderedDict
+from collections import namedtuple
 from uuid import getnode as get_mac
 import argparse
 import glob
@@ -18,7 +19,7 @@ root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
 cluster_build_nodes = None
-service_configs = None
+ServiceFn = namedtuple('ServiceFn', ['nginx_proxy', 'postgres'])
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -33,7 +34,7 @@ def get_commands():
     return {
         'init':                 (command_init,              parse_args_init),
         'build':                (command_build,             parse_args_build),
-        'build_nginx_proxy':    (command_build_nginx_proxy, parse_args_build_nginx_proxy),
+        'gen_certs':            (command_gen_certs,         parse_args_gen_certs),
         'dev':                  (command_dev,               parse_args_dev),
         'dev_cluster':          (command_dev_cluster,       parse_args_dev_cluster),
         'dev_registry':         (command_dev_registry,      parse_args_dev_registry),
@@ -72,29 +73,20 @@ def parse_args_build(args):
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
                                         help      = 'Print Dockerfile without building')
-    parser.add_argument('--domain',     dest      = 'domain',
-                                        default   = '',
-                                        help      = 'Domain for web proxy')
-    parser.add_argument('--tag',        dest      = 'tag',
-                                        default   = '',
-                                        help      = 'Tag name if no domain')
     parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of target platform')
 
     return parser.parse_args(args)
 
-def parse_args_build_nginx_proxy(args):
-    parser = argparse.ArgumentParser(prog='cppdock build_nginx_proxy')
+def parse_args_gen_certs(args):
+    parser = argparse.ArgumentParser(prog='cppdock gen_certs')
     parser.add_argument('-f', '--file', dest      = 'json_file_path',
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
-
-    parser.add_argument('--print-only', dest      = 'print_only',
-                                        action    = 'store_true',
-                                        help      = 'Print Dockerfile without building')
-    parser.add_argument('domain',       default   = None,
-                                        help      = 'Domain name of proxy server')
+    parser.add_argument('platform',     default   = None,
+                                        nargs     = '?',
+                                        help      = 'Name of platform')
 
     return parser.parse_args(args)
 
@@ -125,9 +117,6 @@ def parse_args_dev_cluster(args):
     parser.add_argument('--gen-certs',  dest      = 'gen_certs',
                                         action    = 'store_true',
                                         help      = 'Generates self signed certs for the domain')
-    parser.add_argument('domain',       default   = None,
-                                        help      = 'Domain name or tag if no proxy')
-
     return parser.parse_args(args)
 
 def parse_args_dev_registry(args):
@@ -221,23 +210,30 @@ def command_build(args):
     for platform in platforms:
         make_build_image(config, platform, args.print_only)
 
-    if args.domain:
-        make_nginx_proxy_image(config, args.domain, args.print_only)
-
 def make_build_image(config, platform, print_only):
     if is_platform_service(config, platform):
+        service_type = get_service_type(config, platform)
+        fn = ServiceFn(nginx_proxy  = make_nginx_proxy_image,
+                       postgres     = lambda *x: None)
+        getattr(fn, service_type)(config, platform, print_only)
         return
 
     make_base_image(config, platform, print_only)
     make_dep_image(config, platform, print_only)
 
-def command_build_nginx_proxy(args):
+def command_gen_certs(args):
     config = load_config_file_with_args(args)
-    make_nginx_proxy_image(config, args.domain, args.print_only)
+    if args.platform:
+        domain = get_domain(config, args.platform)
+    else:
+        domain = config['cppdock'].get('domain')
 
-def make_nginx_proxy_image(config, domain, print_only):
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
-    conf_data = get_nginx_proxy_conf(config, domain)
+    assert domain != None, "Config file must specify domain name"
+    import_ssl_certificate(*generate_self_signed_ssl_certificate(domain))
+
+def make_nginx_proxy_image(config, platform_name, print_only):
+    tag_name = get_image_tag_name(config, platform_name, 'service')
+    conf_data = get_nginx_proxy_conf(config, platform_name)
     dockerfile = """
     FROM nginx:alpine
         RUN echo $'{conf_data}' > /etc/nginx/nginx.conf
@@ -251,19 +247,16 @@ def command_dev(args):
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
     make_dev_image(config, platform_name)
     run_dev_image(config, platform_name, ports_arg)
-
+    
 def command_dev_cluster(args):
-    domain      = args.domain
     config      = load_config_file_with_args(args)
     stack_name  = get_stack_name(config)
 
-    if args.gen_certs:
-        import_ssl_certificate(*generate_self_signed_ssl_certificate(domain))
 
     if (args.stop):
         subprocess.check_output(['docker', 'stack', 'rm', stack_name])
     elif (args.print_only):
-        print get_dev_compose_file(config, domain)
+        print get_dev_compose_file(config)
     else:
         nodes = cluster_get_build_node_ids()
         if is_cluster_mode():
@@ -284,7 +277,7 @@ def command_dev_cluster(args):
             nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
             push_docker_image(config, nginx_proxy_tag_name)
 
-        run_stack_deploy(config, stack_name, domain)
+        run_stack_deploy(config, stack_name)
 
         print "Finished deploying {stack_name}\n".format(stack_name = stack_name)
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
@@ -820,9 +813,9 @@ def run_dev_image(config, platform_name, ports_arg):
     pwd = config['cppdock']['source_path']
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
-def run_stack_deploy(config, stack_name, domain):
+def run_stack_deploy(config, stack_name):
     # docker stack deploy is already idempotent
-    compose_file_data = get_dev_compose_file(config, domain)
+    compose_file_data = get_dev_compose_file(config)
     p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
     p.communicate(input=compose_file_data)
     if p.returncode != 0:
@@ -841,22 +834,11 @@ def run_stack_service_terminal(config, stack_name, platform_name):
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
 
-def get_dev_compose_file(config, domain):
+def get_dev_compose_file(config):
     platform_names = get_all_platforms(config)
-    services = [get_dev_compose_file_service(config, platform_name, domain) for platform_name in platform_names]
+    services = [get_dev_compose_file_service(config, platform_name) for platform_name in platform_names]
     secrets = config.get('secrets', {})
     secrets.update(get_secret_files());
-
-
-    # TODO break out nginx_proxy stuff
-    #      to get_dev_compose_file_service
-    crt = '{}.crt'.format(domain)
-    key = '{}.key'.format(domain)
-    secrets.update({
-        crt: { 'external': True },
-        key: { 'external': True }
-    })
-    services.append(get_nginx_proxy_service(config, domain))
 
     services_dict = {}
     for x in services:
@@ -873,13 +855,10 @@ def get_dev_compose_file(config, domain):
 
     return json.dumps(remove_none(result), indent=2, separators=(',', ': '))
 
-def get_dev_compose_file_service(config, platform_name, domain):
+def get_dev_compose_file_service(config, platform_name):
     platform = get_platform_config(config, platform_name)
     if is_platform_service(config, platform_name):
-        result = {}
-        result.update(platform)
-        del result['type']
-        return { platform_name: result }
+        return get_dev_compose_file_service_service(config, platform_name)
 
     # generate service definition for dev images
 
@@ -900,9 +879,11 @@ def get_dev_compose_file_service(config, platform_name, domain):
     remote_pwd = cluster_get_sync_path(pwd, 'src')
     src_mount_path = remote_pwd if is_cluster_mode() else pwd
     src_mount = '{src_mount_path}:/opt/src:ro'.format(src_mount_path = src_mount_path)
+    domain = get_domain(config, platform_name)
     environment = { 'DOMAIN': domain }
     environment.update(platform.get('environment', {}))
     secrets = platform.get('secrets', [])
+    volume_name = image_tag
 
     return {
         service_name: {
@@ -912,11 +893,28 @@ def get_dev_compose_file_service(config, platform_name, domain):
             'secrets': secrets,
             'volumes': [
                 src_mount,
-                '/opt/build',
+                # TODO declare build volumes at stack level
+                #'{}:/opt/build'.format(volume_name),
                 web_root
             ]
         }
     }
+
+def get_dev_compose_file_service_service(config, platform_name):
+    service_type = get_service_type(config, platform_name)
+    if (service_type == None):
+        default_compose_file_service(config, platform_name)
+
+    fn = ServiceFn(nginx_proxy = get_nginx_proxy_service,
+                   postgres    = default_compose_file_service)
+    return getattr(fn, service_type)(config, platform_name)
+
+def default_compose_file_service(config, platform_name):
+    result = {}
+    platform = get_platform_config(config, platform_name)
+    result.update(platform)
+    del result['type']
+    return { platform_name: result }
 
 def get_build_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, "build")
@@ -1038,7 +1036,8 @@ def cluster_sync_source(config, nodes):
         if p.returncode != 0:
             raise RuntimeError("Failed to sync source files to {node}".format(node = node))
 
-def get_nginx_proxy_conf(config, domain):
+def get_nginx_proxy_conf(config, platform_name):
+    domain = get_domain(config, platform_name)
     locations           = ''
     upstreams           = ''
     # TODO get domain from config
@@ -1231,7 +1230,8 @@ def get_nginx_location_websocket(uri, service_name, port):
                    service_name  = service_name,
                    port          = port)
 
-def get_nginx_proxy_service(config, domain):
+def get_nginx_proxy_service(config, platform_name):
+    domain = get_domain(config, platform_name)
     service_name_fn = lambda x : get_service_name(config, x)
     service_names = map(service_name_fn, get_all_platforms(config))
     tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
@@ -1285,10 +1285,14 @@ def generate_self_signed_ssl_certificate(domain):
     return (domain, key_data, crt_data)
 
 def import_ssl_certificate(domain, key_data, crt_data):
-    # Add as docker secrets
+    # Add to ./cppdock_secrets/
     key_name = '{}.key'.format(domain)
     crt_name = '{}.crt'.format(domain)
     print 'Adding certificates to secret database...'
+    make_secret_file(key_name, key_data)
+    make_secret_file(crt_name, crt_data)
+    return 
+    # TODO remove the rest of this function
     p = subprocess.Popen(['docker', 'secret', 'create', key_name, '-'],
                          stdin=subprocess.PIPE)
                          #stdout=subprocess.PIPE)
@@ -1301,6 +1305,11 @@ def import_ssl_certificate(domain, key_data, crt_data):
     p.communicate(crt_data)
     if p.returncode != 0:
 	raise RuntimeError('Failed to create docker secret for {}'.format(crt_name))
+
+def make_secret_file(name, data):
+    path = os.path.join(os.getcwd(), 'cppdock_secrets', name)
+    with open(path, 'wb') as fh:
+        fh.write(data)
 
 def get_secret_files():
     # We never want to look in the source_path for secrets
@@ -1322,26 +1331,40 @@ def get_registry(config):
     # TODO resolve "docker-machine:{name}"
     return registry or '127.0.0.1:5000'
 
-def get_service_config(service_type):
-    # default config stuff for services with type
-    # service:{service_type}
-    global service_configs
-    if service_configs == None:
-        service_configs = {
-            'nginx_proxy': {},
-            'postgres': {
-                "image": "postgres",
-                "environment": {
-                    "POSTGRES_USER_FILE": "/run/secrets/POSTGRES_USER",
-                    "POSTGRES_PASSWORD_FILE": "/run/secrets/POSTGRES_PASSWORD"
-                },
-                "secrets": [
-                    "POSTGRES_USER",
-                    "POSTGRES_PASSWORD"
-                ]
-            }
-        }
-    return service_configs.get(service_type)
+# get_service_config = gets the default config for a service
+def get_service_config(config, platform_name, service_type):
+    config_fn = ServiceFn(get_service_config_nginx_proxy, 
+                          get_service_config_postgres);
+    return getattr(config_fn, service_type)(config, platform_name)
+
+def get_service_config_nginx_proxy(config, platform_name):
+    platform = get_platform_config(config, platform_name)
+    service_name_fn = lambda x : get_service_name(config, x)
+    service_names = map(service_name_fn, get_all_platforms(config))
+    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
+    service = {
+        'image': tag_name,
+        'ports': ['80:80', '443:443'],
+        'volumes': [
+            'web_root:/opt/web_root:ro'
+        ],
+        'depends_on': service_names
+    }
+
+    return service
+
+def get_service_config_postgres(config, platform_name):
+    return {
+        "image": "postgres",
+        "environment": {
+            "POSTGRES_USER_FILE": "/run/secrets/POSTGRES_USER",
+            "POSTGRES_PASSWORD_FILE": "/run/secrets/POSTGRES_PASSWORD"
+        },
+        "secrets": [
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD"
+        ]
+    }
 
 def get_service_type(config, platform_name):
     type = get_platform_type(config, platform_name)
@@ -1349,13 +1372,17 @@ def get_service_type(config, platform_name):
         return None
     return type.split(':', 1)[1]
 
+def get_domain(config, platform_name):
+    platform = get_platform_config(config, platform_name)
+    return platform.get('domain') or config['cppdock']['domain']
+
 def merge_service_config(config, platform_name):
     type = get_platform_type(config, platform_name)
     service_type = get_service_type(config, platform_name)
     platform = get_platform_config(config, platform_name)
     if not service_type:
         return platform
-    service_config = get_service_config(service_type)
+    service_config = get_service_config(config, platform_name, service_type)
     assert service_config != None, "Not a valid service_type in service ({})".format(type)
     result = {}
     result.update(service_config)
