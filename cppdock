@@ -14,6 +14,7 @@ import urllib2
 import warnings
 import zipfile
 import distutils.dir_util
+import time
 
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
@@ -114,6 +115,9 @@ def parse_args_dev_cluster(args):
     parser.add_argument('--stop',       dest      = 'stop',
                                         action    = 'store_true',
                                         help      = 'Stops the dev cluster services')
+    parser.add_argument('--clean',      dest      = 'clean',
+                                        action    = 'store_true',
+                                        help      = 'Stops the dev cluster services and deletes associated volumes')
     parser.add_argument('--gen-certs',  dest      = 'gen_certs',
                                         action    = 'store_true',
                                         help      = 'Generates self signed certs for the domain')
@@ -250,11 +254,12 @@ def command_dev(args):
     
 def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
-    stack_name  = get_stack_name(config)
 
-
-    if (args.stop):
-        subprocess.check_output(['docker', 'stack', 'rm', stack_name])
+    if (args.stop or args.clean):
+        dev_cluster_stop(config)
+        if (args.clean):
+            dev_cluster_clean_containers(config)
+            dev_cluster_clean_volumes(config)
     elif (args.print_only):
         print get_dev_compose_file(config)
     else:
@@ -277,6 +282,7 @@ def command_dev_cluster(args):
             nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
             push_docker_image(config, nginx_proxy_tag_name)
 
+        stack_name  = get_stack_name(config)
         run_stack_deploy(config, stack_name)
 
         print "Finished deploying {stack_name}\n".format(stack_name = stack_name)
@@ -374,7 +380,6 @@ def load_config_file(json_file_path):
     config = lock_config_file_deps(config, json_file_path)
     config = normalize_config_paths(config)
     config = merge_base_config(config, config_paths)
-    config = merge_service_configs(config)
     config = process_config_replace_deps(config)
 
     source_path = config_paths[0]
@@ -830,30 +835,33 @@ def run_stack_service_terminal(config, stack_name, platform_name):
     print """
     TODO shell into {service_name} somehow
     """
-    # container_id = # get_container_id(stack_name, platform_name)
+    # container_id = # get_container_id(config, platform_name)
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
 
 def get_dev_compose_file(config):
+    result = get_dev_compose_object(config)
+    return json.dumps(remove_none(result), indent=2, separators=(',', ': '))
+
+def get_dev_compose_object(config):
     platform_names = get_all_platforms(config)
-    services = [get_dev_compose_file_service(config, platform_name) for platform_name in platform_names]
+    service_confs = [get_dev_compose_file_service(config, platform_name) for platform_name in platform_names]
     secrets = config.get('secrets', {})
     secrets.update(get_secret_files());
 
-    services_dict = {}
-    for x in services:
-        services_dict.update(x)
+    services = {}
+    volumes = {}
+    for x in service_confs:
+        services.update(x['service'])
+        secrets.update(x.get('secrets', {}))
+        volumes.update(x.get('volumes', {}))
 
-    result = {
+    return {
         'version': '3.1',
-        'services': services_dict,
-        'volumes': {
-            'web_root': None
-        },
+        'services': services,
+        'volumes': volumes,
         'secrets': secrets
     }
-
-    return json.dumps(remove_none(result), indent=2, separators=(',', ': '))
 
 def get_dev_compose_file_service(config, platform_name):
     platform = get_platform_config(config, platform_name)
@@ -883,20 +891,24 @@ def get_dev_compose_file_service(config, platform_name):
     environment = { 'DOMAIN': domain }
     environment.update(platform.get('environment', {}))
     secrets = platform.get('secrets', [])
-    volume_name = image_tag
+    build_volume_name = platform_name + '_build'
 
     return {
-        service_name: {
-            'image': image_tag,
-            'command': command,
-            'environment': environment,
-            'secrets': secrets,
-            'volumes': [
-                src_mount,
-                # TODO declare build volumes at stack level
-                #'{}:/opt/build'.format(volume_name),
-                web_root
-            ]
+        'service': {
+            service_name: {
+                'image': image_tag,
+                'command': command,
+                'environment': environment,
+                'secrets': secrets,
+                'volumes': [
+                    src_mount,
+                    '{}:/opt/build'.format(build_volume_name),
+                    web_root
+                ]
+            }
+        },
+        'volumes': {
+            build_volume_name: None
         }
     }
 
@@ -905,8 +917,8 @@ def get_dev_compose_file_service_service(config, platform_name):
     if (service_type == None):
         default_compose_file_service(config, platform_name)
 
-    fn = ServiceFn(nginx_proxy = get_nginx_proxy_service,
-                   postgres    = default_compose_file_service)
+    fn = ServiceFn(nginx_proxy = get_service_nginx_proxy,
+                   postgres    = get_service_postgres)
     return getattr(fn, service_type)(config, platform_name)
 
 def default_compose_file_service(config, platform_name):
@@ -914,7 +926,11 @@ def default_compose_file_service(config, platform_name):
     platform = get_platform_config(config, platform_name)
     result.update(platform)
     del result['type']
-    return { platform_name: result }
+    return { 
+        'service': {
+            platform_name: result 
+        }
+    }
 
 def get_build_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, "build")
@@ -1230,23 +1246,59 @@ def get_nginx_location_websocket(uri, service_name, port):
                    service_name  = service_name,
                    port          = port)
 
-def get_nginx_proxy_service(config, platform_name):
+def get_service_nginx_proxy(config, platform_name):
     domain = get_domain(config, platform_name)
+    platform = get_platform_config(config, platform_name)
     service_name_fn = lambda x : get_service_name(config, x)
     service_names = map(service_name_fn, get_all_platforms(config))
     tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
+    volume_name = platform.get('volume_name') or 'web_root'
     return {
-        'nginx_proxy': {
-            'image': tag_name,
-            'ports': ['80:80', '443:443'],
-            'volumes': [
-                'web_root:/opt/web_root:ro'
-            ],
-            'secrets': [
-                "{}.crt".format(domain),
-                "{}.key".format(domain)
-            ],
-            'depends_on': service_names
+        'service': {
+            platform_name: {
+                'image': tag_name,
+                'ports': ['80:80', '443:443'],
+                'volumes': [
+                    '{}:/opt/web_root:ro'.format(volume_name)
+                ],
+                'secrets': [
+                    "{}.crt".format(domain),
+                    "{}.key".format(domain)
+                ],
+                'depends_on': service_names
+            }
+        },
+        'volumes': {
+            volume_name: None
+        }
+    }
+
+def get_service_postgres(config, platform_name):
+    volume_name = platform_name
+    return {
+        'service': {
+            platform_name: {
+                'image': 'postgres',
+                'environment': {
+                    'POSTGRES_USER_FILE': '/run/secrets/POSTGRES_USER',
+                    'POSTGRES_PASSWORD_FILE': '/run/secrets/POSTGRES_PASSWORD'
+                },
+                'secrets': [
+                    'POSTGRES_USER',
+                    'POSTGRES_PASSWORD'
+                ],
+                'volumes': [
+                    '{}:/var/lib/postgresql/data'.format(volume_name)
+                ],
+                'deploy': {
+                    'placement': {
+                        'constraints': ['node.role == manager']
+                    }
+                }
+            },
+        },
+        'volumes': {
+            volume_name: None
         }
     }
 
@@ -1331,41 +1383,6 @@ def get_registry(config):
     # TODO resolve "docker-machine:{name}"
     return registry or '127.0.0.1:5000'
 
-# get_service_config = gets the default config for a service
-def get_service_config(config, platform_name, service_type):
-    config_fn = ServiceFn(get_service_config_nginx_proxy, 
-                          get_service_config_postgres);
-    return getattr(config_fn, service_type)(config, platform_name)
-
-def get_service_config_nginx_proxy(config, platform_name):
-    platform = get_platform_config(config, platform_name)
-    service_name_fn = lambda x : get_service_name(config, x)
-    service_names = map(service_name_fn, get_all_platforms(config))
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
-    service = {
-        'image': tag_name,
-        'ports': ['80:80', '443:443'],
-        'volumes': [
-            'web_root:/opt/web_root:ro'
-        ],
-        'depends_on': service_names
-    }
-
-    return service
-
-def get_service_config_postgres(config, platform_name):
-    return {
-        "image": "postgres",
-        "environment": {
-            "POSTGRES_USER_FILE": "/run/secrets/POSTGRES_USER",
-            "POSTGRES_PASSWORD_FILE": "/run/secrets/POSTGRES_PASSWORD"
-        },
-        "secrets": [
-            "POSTGRES_USER",
-            "POSTGRES_PASSWORD"
-        ]
-    }
-
 def get_service_type(config, platform_name):
     type = get_platform_type(config, platform_name)
     if type == 'service' or not type.startswith('service:'):
@@ -1376,23 +1393,48 @@ def get_domain(config, platform_name):
     platform = get_platform_config(config, platform_name)
     return platform.get('domain') or config['cppdock']['domain']
 
-def merge_service_config(config, platform_name):
-    type = get_platform_type(config, platform_name)
-    service_type = get_service_type(config, platform_name)
-    platform = get_platform_config(config, platform_name)
-    if not service_type:
-        return platform
-    service_config = get_service_config(config, platform_name, service_type)
-    assert service_config != None, "Not a valid service_type in service ({})".format(type)
-    result = {}
-    result.update(service_config)
-    result.update(platform)
-    return result
+def dev_cluster_stop(config):
+    stack_name  = get_stack_name(config)
+    subprocess.check_output(['docker', 'stack', 'rm', stack_name])
 
-def merge_service_configs(config):
-    platforms = config['platforms']
-    for platform_name in config.get("platforms", {}):
-        platforms[platform_name] = merge_service_config(config, platform_name)
-    return config
+def dev_cluster_clean_containers(config):
+    stack_name  = get_stack_name(config)
+    ids = get_container_ids(stack_name)
+    if not ids:
+        return
+    subprocess.check_output(['docker', 'container', 'rm', '--force'] + ids)
+
+def dev_cluster_clean_volumes(config):
+    stack_name  = get_stack_name(config)
+    names = get_dev_compose_object(config)['volumes'].keys()
+    name_set = set(map(lambda x: stack_name + '_' + x, names))
+    names = list(name_set.intersection(get_volume_names(stack_name)))
+    if not names:
+        return
+    subprocess.check_output(['docker', 'volume', 'rm'] + names)
+
+def get_container_ids(name):
+    # docker ps -a --filter "name=sc2_nbdl_test_server" --format="{{.ID}}"
+    # filter network to prevent accidentally remove similarly named containers
+    filter_name = 'name={}'.format(name)
+    filter_network = 'network={}'.format(name + '_default')
+    return subprocess.check_output(['docker', 'ps', '-a',
+                                    '--filter', filter_name,
+                                    '--filter', filter_network,
+                                    '--format', '{{.ID}}' 
+                                   ]).split()
+
+def get_volume_names(name):
+    #docker volume ls --filter "name=sc2_nbdl_test" --format="{{.Name}}"
+    filter_name = 'name={}'.format(name)
+    return subprocess.check_output(['docker', 'volume', 'ls',
+                                    '--filter', filter_name,
+                                    '--format', '{{.Name}}' 
+                                   ]).split()
+
+
+
+        
+
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
