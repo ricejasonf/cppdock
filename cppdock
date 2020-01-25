@@ -21,6 +21,7 @@ default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
 cluster_build_nodes = None
 ServiceFn = namedtuple('ServiceFn', ['nginx_proxy', 'postgres'])
+noop = lambda *x: None
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -214,16 +215,30 @@ def command_build(args):
     for platform in platforms:
         make_build_image(config, platform, args.print_only)
 
-def make_build_image(config, platform, print_only):
-    if is_platform_service(config, platform):
-        service_type = get_service_type(config, platform)
-        fn = ServiceFn(nginx_proxy  = make_nginx_proxy_image,
-                       postgres     = lambda *x: None)
-        getattr(fn, service_type)(config, platform, print_only)
+def make_build_image(config, platform_name, print_only):
+    if is_platform_service(config, platform_name):
+        fn = make_service_image_fn(config, platform_name)
+        fn(config, platform_name, print_only)
         return
 
-    make_base_image(config, platform, print_only)
-    make_dep_image(config, platform, print_only)
+    make_base_image(config, platform_name, print_only)
+    dockerfile = make_deps_dockerfile(config, platform_name)
+    tag_name = get_build_tag_name(config, platform_name)
+    make_docker_image(tag_name, dockerfile, print_only)
+
+def make_service_image_fn(config, platform_name):
+    service_type = get_service_type(config, platform_name)
+    fn = ServiceFn(nginx_proxy  = make_nginx_proxy_image,
+                   postgres     = noop)
+    return getattr(fn, service_type)
+
+def get_service_image_tag_name(config, platform_name):
+    # this gets the image name to push to registry
+    # or None if not needed
+    fn = make_service_image_fn(config, platform_name)
+    if fn is noop:
+        return None
+    return get_image_tag_name(config, platform_name, 'service')
 
 def command_gen_certs(args):
     config = load_config_file_with_args(args)
@@ -249,8 +264,9 @@ def command_dev(args):
     config = load_config_file_with_args(args)
     platform_name = args.platform
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
-    make_dev_image(config, platform_name)
-    run_dev_image(config, platform_name, ports_arg)
+    print_only = False
+    make_build_image(config, platform_name, print_only)
+    run_build_image(config, platform_name, ports_arg)
     
 def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
@@ -273,14 +289,14 @@ def command_dev_cluster(args):
         cluster_sync_source(config, nodes)
         # builds, tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
-            # TODO push service images too
+            # TODO push service images too that need it
             if is_platform_service(config, platform_name):
-                continue
-            tag_name = make_dev_image(config, platform_name)
-            push_docker_image(config, tag_name)
-
-            nginx_proxy_tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
-            push_docker_image(config, nginx_proxy_tag_name)
+                tag_name = get_service_image_tag_name(config, platform_name)
+                if tag_name:
+                    push_docker_image(config, tag_name)
+            else:
+                tag_name = get_build_tag_name(config, platform_name)
+                push_docker_image(config, tag_name)
 
         stack_name  = get_stack_name(config)
         run_stack_deploy(config, stack_name)
@@ -634,11 +650,6 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_dep_image(config, platform_name, print_only):
-    dockerfile = make_deps_dockerfile(config, platform_name)
-    tag_name = get_build_tag_name(config, platform_name)
-    make_docker_image(tag_name, dockerfile, print_only)
-
 def make_docker_image(tag_name, dockerfile_data, print_only = False):
     if print_only:
         print '###### Docker Image: ' + tag_name + ' ######'
@@ -695,30 +706,25 @@ def make_deps_dockerfile(config, platform_name):
     deps_stages = ''
     deps_imports = ''
 
+    build_type = get_build_type(config, platform_name)
+    target = get_dev_service_target(config, platform_name)
+
     for dep in deps:
         deps_stages += string.join([make_deps_stage(base_image, platform_name, dep)])
         deps_imports += make_deps_import(platform_name, dep[-1][2])
 
     return """
-{0}
-FROM {1}
-{2}
-""".format(deps_stages, base_image, deps_imports)
-
-# deprecated
-def make_deps_dockerfile_stageless(config, platform):
-    base_image  = get_config_option(config, 'platform_' + platform)
-    deps = get_deps_from_config(config, platform)
-    deps_stages = string.join([make_install_dep(x, y, z, zz) for x, y, z, zz in deps])
-
-    return """
-FROM {0} as build_all
-{1}
-
-FROM {2}
-
-    COPY --from=build_all /opt/install /opt/sysroot
-""".format(base_image, deps_stages, base_image)
+{deps_stages}
+FROM {base_image}
+{deps_imports}
+    WORKDIR /opt/build
+    CMD cppdock init_dev_service --shell-only {build_type} {target}
+""".format(deps_stages  = deps_stages, 
+           base_image   =  base_image,
+           deps_imports = deps_imports,
+           build_type   = build_type,
+           target       = target)
+    return
 
 def make_deps_stage(base_image, platform_name, deps):
     copy_recipes_term = ""
@@ -785,36 +791,8 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
-def make_dev_image(config, platform_name):
-    build_tag_name = get_build_tag_name(config, platform_name)
-    dev_tag_name = get_dev_tag_name(config, platform_name)
-    # TODO get build type from config['cppdock']['build_type']
-    build_type = 'debug'
-    target = get_dev_service_target(config, platform_name)
-
-    dockerfile = """
-FROM {build_tag_name}
-    WORKDIR /opt/build
-    CMD cppdock init_dev_service --shell-only {build_type} {target}
-""".format(build_tag_name = build_tag_name,
-           build_type = build_type,
-           target = target)
-
-    p = subprocess.Popen(['docker', 'build', '--tag=' + dev_tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
-    out, err = p.communicate(dockerfile)
-    if p.returncode == 0:
-        print "Finished building {0}.".format(dev_tag_name)
-    else:
-        print """
-
-    FAILURE: Build of {0} FAILED.
-        """.format(dev_tag_name)
-        sys.exit(1)
-
-    return dev_tag_name
-
-def run_dev_image(config, platform_name, ports_arg):
-    tag_name = get_dev_tag_name(config, platform_name)
+def run_build_image(config, platform_name, ports_arg):
+    tag_name = get_build_tag_name(config, platform_name)
     pwd = config['cppdock']['source_path']
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
@@ -871,7 +849,7 @@ def get_dev_compose_file_service(config, platform_name):
     # generate service definition for dev images
 
     service_name = get_service_name(config, platform_name)
-    image_tag = get_dev_tag_name(config, platform_name)
+    image_tag = get_build_tag_name(config, platform_name)
     target = get_dev_service_target(config, platform_name)
     build_type = 'debug'
 
@@ -935,14 +913,11 @@ def default_compose_file_service(config, platform_name):
 def get_build_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, "build")
 
-def get_dev_tag_name(config, platform_name):
-    return get_image_tag_name(config, platform_name, "dev")
-
 def get_base_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, 'base')
 
 def get_image_tag_name(config, platform_name, image_type):
-    assert(image_type in ['build', 'dev', 'release', 'service', 'base', 'user_base'])
+    assert(image_type in ['build', 'release', 'service', 'base', 'user_base'])
     return "{project}-{platform}{image_type}".format(
         project     = get_project_name(config),
         platform    = platform_name,
@@ -1251,7 +1226,7 @@ def get_service_nginx_proxy(config, platform_name):
     platform = get_platform_config(config, platform_name)
     service_name_fn = lambda x : get_service_name(config, x)
     service_names = map(service_name_fn, get_all_platforms(config))
-    tag_name = get_image_tag_name(config, 'nginx_proxy', 'service')
+    tag_name = get_image_tag_name(config, platform_name, 'service')
     volume_name = platform.get('volume_name') or 'web_root'
     return {
         'service': {
@@ -1309,11 +1284,6 @@ def is_cluster_mode():
 def get_service_name(config, platform_name):
     return platform_name
 
-def check_secret(name):
-    p = subprocess.Popen(['docker', 'secret', 'inspect', name])
-    p.communicate('')
-    return p.returncode != 0
-
 def generate_self_signed_ssl_certificate(domain):
     subj = '/C=US/ST=Nevada/L=Henderson/O=Dis/CN={}'.format(domain)
     try:
@@ -1343,20 +1313,6 @@ def import_ssl_certificate(domain, key_data, crt_data):
     print 'Adding certificates to secret database...'
     make_secret_file(key_name, key_data)
     make_secret_file(crt_name, crt_data)
-    return 
-    # TODO remove the rest of this function
-    p = subprocess.Popen(['docker', 'secret', 'create', key_name, '-'],
-                         stdin=subprocess.PIPE)
-                         #stdout=subprocess.PIPE)
-    p.communicate(key_data)
-    if p.returncode != 0:
-	raise RuntimeError('Failed to create docker secret for {}'.format(key_name))
-
-    p = subprocess.Popen(['docker', 'secret', 'create', crt_name, '-'],
-                         stdin=subprocess.PIPE)
-    p.communicate(crt_data)
-    if p.returncode != 0:
-	raise RuntimeError('Failed to create docker secret for {}'.format(crt_name))
 
 def make_secret_file(name, data):
     path = os.path.join(os.getcwd(), 'cppdock_secrets', name)
@@ -1392,6 +1348,11 @@ def get_service_type(config, platform_name):
 def get_domain(config, platform_name):
     platform = get_platform_config(config, platform_name)
     return platform.get('domain') or config['cppdock']['domain']
+
+def get_build_type(config, platform_name):
+    platform = get_platform_config(config, platform_name)
+    return platform.get('build_type') \
+        or config['cppdock'].get('build_type', 'debug')
 
 def dev_cluster_stop(config):
     stack_name  = get_stack_name(config)
