@@ -4,17 +4,19 @@ from collections import OrderedDict
 from collections import namedtuple
 from uuid import getnode as get_mac
 import argparse
+import distutils.dir_util
 import glob
+import itertools
 import json
 import os
+import re
 import string
 import subprocess
 import sys
+import time
 import urllib2
 import warnings
 import zipfile
-import distutils.dir_util
-import time
 
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
@@ -43,6 +45,10 @@ def get_commands():
         'install_dep':          (command_install_dep,       parse_args_install_dep),
         'install_src':          (command_install_src,       parse_args_install_src),
         'init_dev_service':     (command_init_dev_service,  parse_args_init_dev_service),
+        'cluster_build':        (command_cluster_build,     parse_args_cluster_build),
+        'cluster_start':        (command_cluster_start,     parse_args_cluster_start),
+        'cluster_stop':         (command_cluster_stop,      parse_args_cluster_stop),
+        'cluster_rm':           (command_cluster_rm,        parse_args_cluster_rm),
         '_complete':            (command_complete,          lambda _ : os.sys.argv[2]),
     }
 
@@ -53,6 +59,13 @@ def parse_args_command(args):
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument('command', choices = get_commands().keys())
     return parser.parse_args(args)
+
+def create_args_parser(subcommand):
+    parser = argparse.ArgumentParser(prog='cppdock ' + subcommand)
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
+    return parser
 
 def parse_args_init(args):
     parser = argparse.ArgumentParser(prog='cppdock init')
@@ -125,7 +138,7 @@ def parse_args_dev_cluster(args):
     return parser.parse_args(args)
 
 def parse_args_dev_registry(args):
-    parser = argparse.ArgumentParser(prog='cppdock dev_registry')
+    parser = create_args_parser('dev_registry')
     parser.add_argument('--stop',       dest      = 'stop',
                                         action    = 'store_true',
                                         help      = 'Stops the dev registry')
@@ -160,6 +173,22 @@ def parse_args_init_dev_service(args):
     group.add_argument('build_type',    help      = 'Build type')
     group.add_argument('target',        help      = 'Build target name')
 
+    return parser.parse_args(args)
+
+def parse_args_cluster_build(args):
+    parser = create_args_parser('cluster_build')
+    return parser.parse_args(args)
+
+def parse_args_cluster_start(args):
+    parser = create_args_parser('cluster_start')
+    return parser.parse_args(args)
+
+def parse_args_cluster_stop(args):
+    parser = create_args_parser('cluster_stop')
+    return parser.parse_args(args)
+
+def parse_args_cluster_rm(args):
+    parser = create_args_parser('cluster_rm')
     return parser.parse_args(args)
 
 def dispatch(command_args, cli_args):
@@ -205,11 +234,13 @@ def command_complete(args_str):
 
 def command_init(args):
     config = load_config_file_with_args(args)
+    set_master_machine(config)
     if args.print_config:
         print json.dumps(config, indent=2, separators=(',', ': '))
 
 def command_build(args):
     config = load_config_file_with_args(args)
+    set_master_machine(config)
 
     platforms = [args.platform] if args.platform else get_all_platforms(config)
     for platform in platforms:
@@ -262,14 +293,16 @@ def make_nginx_proxy_image(config, platform_name, print_only):
 
 def command_dev(args):
     config = load_config_file_with_args(args)
+    set_master_machine(config)
     platform_name = args.platform
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
     print_only = False
     make_build_image(config, platform_name, print_only)
     run_build_image(config, platform_name, ports_arg)
-    
+
 def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
+    set_master_machine(config)
 
     if (args.stop or args.clean):
         dev_cluster_stop(config)
@@ -279,14 +312,12 @@ def command_dev_cluster(args):
     elif (args.print_only):
         print get_dev_compose_file(config)
     else:
-        nodes = cluster_get_build_node_ids()
-        if is_cluster_mode():
-            print "Running in CLUSTER mode...\n"
-            print "Nodes found: " + ', '.join(nodes)
+        if is_cluster_mode(config):
+            print "Running in CLUSTER mode..."
         else:
             print "Running in LOCAL mode..."
 
-        cluster_sync_source(config, nodes)
+        cluster_sync_source(config)
         # builds, tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
             # TODO push service images too that need it
@@ -305,6 +336,8 @@ def command_dev_cluster(args):
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
 
 def command_dev_registry(args):
+    config      = load_config_file_with_args(args)
+    set_master_machine(config)
     # docker service create --name test_registry --publish published=5000,target=5000 registry
     env_val = os.getenv('CPPDOCK_DEV_REGISTRY')
     registry_name = 'cppdock-dev-registry'
@@ -377,6 +410,22 @@ def command_init_dev_service(args):
     # command run in container so config is not allowed
     run_dev_service_target(args.build_type, args.target, args.shell_only)
 
+def command_cluster_build(args):
+    config = load_config_file_with_args(args)
+    machine_create_all(config)
+
+def command_cluster_start(args):
+    config = load_config_file_with_args(args)
+    machine_start_all(config)
+
+def command_cluster_stop(args):
+    config = load_config_file_with_args(args)
+    machine_stop_all(config)
+
+def command_cluster_rm(args):
+    config = load_config_file_with_args(args)
+    machine_rm_all(config)
+
 def install_deps_platform(platform, items):
     for i in range(len(items)):
         repo, branch = items[i]
@@ -407,6 +456,7 @@ def load_config_file(json_file_path):
     cppdock["source_path"] = source_path
     cppdock["cppdock_image"] = cppdock.get("cppdock_image",
                                            "ricejasonf/cppdock")
+    config["machine_list"] = get_machine_list(config)
     return config
 
 def load_config_file_json(json_file_path):
@@ -673,6 +723,7 @@ def push_docker_image(config, tag_name):
     # tags with registry and pushes
     registry = get_registry(config)
     rtag_name = registry + '/' + tag_name
+    print "Pushing {}".format(rtag_name)
     subprocess.check_output(['docker', 'tag', tag_name, rtag_name])
     subprocess.check_output(['docker', 'push', rtag_name])
     print "Finished pushing {0}".format(rtag_name)
@@ -719,7 +770,7 @@ FROM {base_image}
 {deps_imports}
     WORKDIR /opt/build
     CMD cppdock init_dev_service --shell-only {build_type} {target}
-""".format(deps_stages  = deps_stages, 
+""".format(deps_stages  = deps_stages,
            base_image   =  base_image,
            deps_imports = deps_imports,
            build_type   = build_type,
@@ -850,6 +901,7 @@ def get_dev_compose_file_service(config, platform_name):
 
     service_name = get_service_name(config, platform_name)
     image_tag = get_build_tag_name(config, platform_name)
+    image_tag = get_registry_tag(config, image_tag)
     target = get_dev_service_target(config, platform_name)
     build_type = 'debug'
 
@@ -862,8 +914,8 @@ def get_dev_compose_file_service(config, platform_name):
         web_root = "web_root:{0}".format(web_root)
 
     pwd = config['cppdock']['source_path']
-    remote_pwd = cluster_get_sync_path(pwd, 'src')
-    src_mount_path = remote_pwd if is_cluster_mode() else pwd
+    remote_pwd = cluster_get_sync_path(pwd)
+    src_mount_path = remote_pwd if is_cluster_mode(config) else pwd
     src_mount = '{src_mount_path}:/opt/src:ro'.format(src_mount_path = src_mount_path)
     domain = get_domain(config, platform_name)
     environment = { 'DOMAIN': domain }
@@ -904,9 +956,9 @@ def default_compose_file_service(config, platform_name):
     platform = get_platform_config(config, platform_name)
     result.update(platform)
     del result['type']
-    return { 
+    return {
         'service': {
-            platform_name: result 
+            platform_name: result
         }
     }
 
@@ -990,42 +1042,30 @@ def cluster_get_worker_token():
     except:
         raise RuntimeError("Unable to get cluster worker token")
 
-def cluster_get_build_node_ids():
-    global cluster_build_nodes
-    if cluster_build_nodes is not None:
-        return cluster_build_nodes
-    try:
-        result = subprocess.check_output(['docker-machine', 'ls',
-                                          '-q', '--filter', 'label=cppdock_build=1',
-                                          '--filter', 'state=Running'])
-        cluster_build_nodes = result.splitlines()
-        return cluster_build_nodes
-    except:
-        raise RuntimeError("Unable to get cluster ids for cppdock_build nodes")
+def cluster_get_sync_path(path):
+    return "/home/ubuntu/sync{}".format(path)
+                                  
 
-def cluster_get_sync_path(path, kind):
-    assert kind in ['src']
-    return "/home/ubuntu/sync{path}/{kind}".format(path = path,
-                                                   kind = kind)
-
-# rsyncs everything in pwd to nodes in cluster
-def cluster_sync_source(config, nodes):
-    nodes = cluster_get_build_node_ids()
+# rsyncs everything in pwd to machines in cluster
+def cluster_sync_source(config):
+    machines = get_machine_list(config)
+    machine_names = [x[0] for x in machines]
     pwd = config['cppdock']['source_path']
-    for node in nodes:
-        path = cluster_get_sync_path(pwd, 'src')
-        p = subprocess.Popen(['docker-machine', 'ssh', node,
+    for name in machine_names:
+        path = cluster_get_sync_path(pwd)
+        p = subprocess.Popen(['docker-machine', 'ssh', name,
                               'mkdir', '-p' ' {path}'.format(path=path)])
         p.communicate('')
         if p.returncode != 0:
-            raise RuntimeError("Unable to make the sync directory on {node}".format(node = node))
-        node_path = "ubuntu@{node}:{path}".format(node = node,
-                                           path = path)
-        p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d', '.', node_path])
+            raise RuntimeError("Unable to make the sync directory on {name}".format(name = name))
+        node_path = "ubuntu@{name}:{path}".format(name = name,
+                                                  path = path)
+        print 'Syncing source code to ' + node_path
+        p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d', pwd + '/.', node_path])
         p.communicate('')
 
         if p.returncode != 0:
-            raise RuntimeError("Failed to sync source files to {node}".format(node = node))
+            raise RuntimeError("Failed to sync source files to {name}".format(name = name))
 
 def get_nginx_proxy_conf(config, platform_name):
     domain = get_domain(config, platform_name)
@@ -1227,6 +1267,7 @@ def get_service_nginx_proxy(config, platform_name):
     service_name_fn = lambda x : get_service_name(config, x)
     service_names = map(service_name_fn, get_all_platforms(config))
     tag_name = get_image_tag_name(config, platform_name, 'service')
+    tag_name = get_registry_tag(config, tag_name)
     volume_name = platform.get('volume_name') or 'web_root'
     return {
         'service': {
@@ -1277,9 +1318,8 @@ def get_service_postgres(config, platform_name):
         }
     }
 
-def is_cluster_mode():
-    # if DOCKER_HOST env var is set and we find at least one docker-machine node
-    return len(cluster_get_build_node_ids()) > 0
+def is_cluster_mode(config):
+    return len(get_machine_list(config)) > 0
 
 def get_service_name(config, platform_name):
     return platform_name
@@ -1336,8 +1376,10 @@ def get_secret_files():
 
 def get_registry(config):
     registry = config['cppdock'].get('registry')
-    # TODO resolve "docker-machine:{name}"
     return registry or '127.0.0.1:5000'
+
+def get_registry_tag(config, tag_name):
+    return get_registry(config) + '/' + tag_name
 
 def get_service_type(config, platform_name):
     type = get_platform_type(config, platform_name)
@@ -1382,7 +1424,7 @@ def get_container_ids(name):
     return subprocess.check_output(['docker', 'ps', '-a',
                                     '--filter', filter_name,
                                     '--filter', filter_network,
-                                    '--format', '{{.ID}}' 
+                                    '--format', '{{.ID}}'
                                    ]).split()
 
 def get_volume_names(name):
@@ -1390,12 +1432,122 @@ def get_volume_names(name):
     filter_name = 'name={}'.format(name)
     return subprocess.check_output(['docker', 'volume', 'ls',
                                     '--filter', filter_name,
-                                    '--format', '{{.Name}}' 
+                                    '--format', '{{.Name}}'
                                    ]).split()
 
+def get_machine_list(config):
+    if config.get('machine_list'):
+        return config['machine_list']
 
+    machines = config.get('machines', {}).items()
+    project_name = get_project_name(config)
+    machine_name = lambda x: (project_name + '_' + x).replace('_', '-')
+    is_manager = lambda x: x[1].get('manager') == True
 
-        
+    result = [(machine_name(name), values) for (name, values) in machines]
+    result.sort(key = is_manager, reverse = True)
+
+    # prevent further access to unprocessed data
+    if machines:
+        del config['machines']
+
+    return result
+
+def get_machine_names(config):
+    return (x for (x, y) in get_machine_list(config))
+
+# TODO maybe use this when we actuall do stuff that needs to be
+#      applied to all machines such as rsyncing source code
+# for_every_machine or replace with some kind of iterator
+def for_every_machine(config, fn):
+    for (name, values) in config['machine_list']:
+        set_machine(name, values)
+        fn(name, values)
+
+def set_master_machine(config):
+    machines = get_machine_list(config)
+    if len(machines) > 0:
+        set_machine(*(machines[0]))
+
+def set_machine(name, values):
+    x = machine_env(name, values)
+    env = os.environ
+
+    print "Setting docker host to machine: " + name
+    def set_env(name):
+        value = x.get(name)
+        if value:
+            env[name] = value
+        else:
+            del env[name]
+
+    set_env('DOCKER_HOST')
+    set_env('DOCKER_TLS_VERIFY')
+    set_env('DOCKER_CERT_PATH')
+    set_env('DOCKER_MACHINE_NAME')
+    print 'Using docker host: ' + env['DOCKER_HOST']
+
+def machine_env(name, values):
+    if values.get('env'):
+        return values['env']
+    else:
+        raw = subprocess.check_output(['docker-machine', 'env', name])
+        return dict(re.findall('export ([A-Z_]+)="([^"]+)"', raw))
+
+def machine_start_all(config):
+    names = get_machine_names(config)
+    subprocess.check_output(['docker-machine', 'start'] + list(names))
+
+def machine_stop_all(config):
+    names = get_machine_names(config)
+    subprocess.check_output(['docker-machine', 'stop'] + list(names))
+
+def machine_rm_all(config):
+    names = get_machine_names(config)
+    subprocess.check_output(['docker-machine', 'rm', '-y'] + list(names))
+
+def machine_create_all(config):
+    # The first machine is the host
+    xs = get_machine_list(config)
+    assert len(xs) > 0, '"machines" must be specified for cluster operations'
+
+    machine_create_master(*(xs[0]))
+    def join_new(name, values):
+        join_token = machine_join_token(name_values)
+        machine_create(name, values, join_token)
+
+    [join_new(name, values) for (name, values) in xs[1:]]
+
+def machine_create_master(name, values):
+    # The first machine that starts the swarm
+    machine_create(name, values)
+    set_machine(name, values)
+    subprocess.check_output(['docker', 'swarm', 'init'])
+
+def machine_create(name, values, join_token = None):
+    labels = values.get('labels', {}).items()
+    ports = values.get('ports', [80, 443])
+    # ops is a list of lists to be chained
+    ops = []
+    # NOTE We are always setting `swarm-master`
+    #      because a node could be promoted.
+    #      (I think it just exposes a port)
+    ops += [['--swarm', '--swarm-master']]
+    ops += [['--driver', values['driver']]]
+    ops += [['--{}'.format(x[0]), x[1]] for x in values.get('options', [])]
+    ops += [['--engine-label', '{0}={1}'.format(k, v)] for k, v in labels]
+    if join_token:
+        ops += [['--swarm-discovery', 'token://' + join_token]]
+    if values['driver'] == 'amazonec2':
+        ops += [['--amazonec2-open-port', str(x)] for x in ports]
+    ops_flat = [x for x in itertools.chain.from_iterable(ops)]
+    subprocess.check_output(['docker-machine', 'create'] + ops_flat + [name])
+
+def machine_join_token(name, values):
+    kind = 'manager' if values.get('manager') else 'worker'
+    return subprocess.check_output(['docker', 'swarm',
+                                    'join-token', '-q', kind])
+
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
