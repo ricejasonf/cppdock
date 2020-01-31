@@ -246,7 +246,7 @@ def command_build(args):
     for platform in platforms:
         make_build_image(config, platform, args.print_only)
 
-def make_build_image(config, platform_name, print_only):
+def make_build_image(config, platform_name, print_only = False):
     if is_platform_service(config, platform_name):
         fn = make_service_image_fn(config, platform_name)
         fn(config, platform_name, print_only)
@@ -312,15 +312,18 @@ def command_dev_cluster(args):
     elif (args.print_only):
         print get_dev_compose_file(config)
     else:
+        # make the build images
+        [make_build_image(config, p) for p in get_all_platforms(config)]
+
         if is_cluster_mode(config):
             print "Running in CLUSTER mode..."
         else:
             print "Running in LOCAL mode..."
 
         cluster_sync_source(config)
-        # builds, tags, and pushes the dev images which should be to the dev_registry
+
+        # tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
-            # TODO push service images too that need it
             if is_platform_service(config, platform_name):
                 tag_name = get_service_image_tag_name(config, platform_name)
                 if tag_name:
@@ -338,18 +341,11 @@ def command_dev_cluster(args):
 def command_dev_registry(args):
     config      = load_config_file_with_args(args)
     set_master_machine(config)
-    # docker service create --name test_registry --publish published=5000,target=5000 registry
-    env_val = os.getenv('CPPDOCK_DEV_REGISTRY')
-    registry_name = 'cppdock-dev-registry'
-    if env_val:
-        raise 'ERROR: CPPDOCK_DEV_REGISTRY is set ({})'.format(env_val)
 
     if args.stop:
-        subprocess.check_output(['docker', 'service', 'rm', registry_name])
+        dev_registry_rm()
     else:
-        subprocess.check_output(['docker', 'service', 'create', '--name',
-                                 registry_name, '--publish', '5000:5000', 'registry'])
-
+        dev_registry_create()
 
 def command_install_dep(args):
     # This called inside a container so config is not allowed
@@ -1523,6 +1519,7 @@ def machine_create_master(name, values):
     machine_create(name, values)
     set_machine(name, values)
     subprocess.check_output(['docker', 'swarm', 'init'])
+    dev_registry_create()
 
 def machine_create(name, values, join_token = None):
     labels = values.get('labels', {}).items()
@@ -1547,6 +1544,16 @@ def machine_join_token(name, values):
     kind = 'manager' if values.get('manager') else 'worker'
     return subprocess.check_output(['docker', 'swarm',
                                     'join-token', '-q', kind])
+
+def dev_registry_create():
+    registry_name = 'cppdock-registry'
+    subprocess.check_output(['docker', 'service', 'create', '--name',
+                             'cppdock-registry', '--publish', '5000:5000',
+                             'registry'])
+
+def dev_registry_rm():
+    registry_name = 'cppdock-registry'
+    subprocess.check_output(['docker', 'service', 'rm', 'cppdock-registry'])
 
 
 
