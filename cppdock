@@ -132,9 +132,6 @@ def parse_args_dev_cluster(args):
     parser.add_argument('--clean',      dest      = 'clean',
                                         action    = 'store_true',
                                         help      = 'Stops the dev cluster services and deletes associated volumes')
-    parser.add_argument('--gen-certs',  dest      = 'gen_certs',
-                                        action    = 'store_true',
-                                        help      = 'Generates self signed certs for the domain')
     return parser.parse_args(args)
 
 def parse_args_dev_registry(args):
