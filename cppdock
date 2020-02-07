@@ -21,7 +21,6 @@ import zipfile
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
-cluster_build_nodes = None
 ServiceFn = namedtuple('ServiceFn', ['nginx_proxy', 'postgres'])
 noop = lambda *x: None
 
@@ -231,7 +230,6 @@ def command_complete(args_str):
 
 def command_init(args):
     config = load_config_file_with_args(args)
-    set_master_machine(config)
     if args.print_config:
         print json.dumps(config, indent=2, separators=(',', ': '))
 
@@ -406,6 +404,7 @@ def command_init_dev_service(args):
 def command_cluster_build(args):
     config = load_config_file_with_args(args)
     machine_create_all(config)
+    cluster_sync_source_init(config)
 
 def command_cluster_start(args):
     config = load_config_file_with_args(args)
@@ -435,7 +434,10 @@ def load_config_file(json_file_path):
     config = load_config_file_json(json_file_path)
 
     # we do not attempt to lock deps in the base_config
-    config = lock_config_file_deps(config, json_file_path)
+    config = initialize_source_code(config)
+    config = lock_config_file_deps(config)
+    write_config_file(config, json_file_path)
+
     config = normalize_config_paths(config)
     config = merge_base_config(config, config_paths)
     config = process_config_replace_deps(config)
@@ -526,7 +528,26 @@ def process_config_replace_deps(config):
     #      not sure if this is desirable yet
     return config
 
-def lock_config_file_deps(config, json_file_path):
+def initialize_source_code(config):
+    # this initializes the source code on the local machine
+    source_init = config['cppdock'].get('source_init')
+    source_path = config['cppdock'].get('source_path')
+
+    if source_path or source_init:
+        assert not config['cppdock'].get('base_config'), \
+            '"base_config" may not be set with "source_init" or "source_path"'
+    if source_path or not source_init:
+        return config
+
+    source_path = './source/'
+    os.mkdir(source_path)
+    script_path = os.path.join('..', source_init)
+    subprocess.check_output([script_path, '--local'], cwd = source_path)
+
+    config['cppdock']['source_path'] = source_path
+    return config
+
+def lock_config_file_deps(config):
     if 'platforms' not in config:
         return config
     for platform, settings in config['platforms'].items():
@@ -538,7 +559,6 @@ def lock_config_file_deps(config, json_file_path):
             for item in stage:
                 item = lock_item_json(item)
 
-    write_config_file(config, json_file_path)
     return config
 
 def lock_item_json(item):
@@ -764,7 +784,7 @@ FROM {base_image}
     WORKDIR /opt/build
     CMD cppdock init_dev_service --shell-only {build_type} {target}
 """.format(deps_stages  = deps_stages,
-           base_image   =  base_image,
+           base_image   = base_image,
            deps_imports = deps_imports,
            build_type   = build_type,
            target       = target)
@@ -1037,35 +1057,63 @@ def cluster_get_worker_token():
 
 def cluster_get_sync_path(path):
     return "/home/ubuntu/sync{}".format(path)
-                                  
+
 
 # rsyncs everything in pwd to machines in cluster
 def cluster_sync_source(config):
     machines = get_machine_list(config)
     machine_names = [x[0] for x in machines]
-    pwd = config['cppdock']['source_path']
     for name in machine_names:
-        path = cluster_get_sync_path(pwd)
-        p = subprocess.Popen(['docker-machine', 'ssh', name,
-                              'mkdir', '-p' ' {path}'.format(path=path)])
-        p.communicate('')
-        if p.returncode != 0:
-            raise RuntimeError("Unable to make the sync directory on {name}".format(name = name))
-        node_path = "ubuntu@{name}:{path}".format(name = name,
-                                                  path = path)
-        print 'Syncing source code to ' + node_path
-        p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d', pwd + '/.', node_path])
-        p.communicate('')
+        cluster_sync_source_rsync_node(config, name)
 
-        if p.returncode != 0:
-            raise RuntimeError("Failed to sync source files to {name}".format(name = name))
+# Intializes source code on all machines
+# after they are built.
+def cluster_sync_source_init(config):
+    machines = get_machine_list(config)
+    machine_names = [x[0] for x in machines]
+
+    source_init = config['cppdock'].get('source_init')
+    script_data = ''
+    if source_init:
+        with open(source_init, 'r') as fh:
+            script_data += fh.read()
+
+    for name in machine_names:
+        cluster_sync_source_init_node(config, name, script_data)
+        cluster_sync_source_rsync_node(config, name)
+
+def cluster_sync_source_init_node(config, name, script_data):
+    pwd = config['cppdock']['source_path']
+    path = cluster_get_sync_path(pwd)
+    print 'Initializing source code on {}'.format(name)
+    p = subprocess.Popen(['docker-machine', 'ssh', name, 'bash', '-s'],
+                         stdin = subprocess.PIPE)
+    script_header = 'mkdir -p {path} && cd {path};'
+    p.communicate(script_header.format(path = path) + script_data)
+    if p.returncode != 0:
+        raise RuntimeError(
+            'Failed to initialize source code on {name}'.format(
+                name = name))
+
+def cluster_sync_source_rsync_node(config, name):
+    pwd = config['cppdock']['source_path']
+    path = cluster_get_sync_path(pwd)
+    node_path = "ubuntu@{name}:{path}".format(name = name,
+                                              path = path)
+    print 'Syncing source code to ' + node_path
+    p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d',
+                          pwd + '/.',
+                          node_path])
+    p.communicate('')
+
+    if p.returncode != 0:
+        raise RuntimeError("Failed to sync source files to {name}".format(name = name))
 
 def get_nginx_proxy_conf(config, platform_name):
     domain = get_domain(config, platform_name)
-    assert domain, 'Nginx proxy requires a domain name' 
+    assert domain, 'Nginx proxy requires a domain name'
     locations           = ''
     upstreams           = ''
-    # TODO get domain from config
     redirect_servers    = ''
 
     if domain.startswith('www.'):
