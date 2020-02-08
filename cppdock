@@ -315,8 +315,6 @@ def command_dev_cluster(args):
         else:
             print "Running in LOCAL mode..."
 
-        cluster_sync_source(config)
-
         # tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
             if is_platform_service(config, platform_name):
@@ -326,6 +324,8 @@ def command_dev_cluster(args):
             else:
                 tag_name = get_build_tag_name(config, platform_name)
                 push_docker_image(config, tag_name)
+
+        cluster_sync_source(config)
 
         stack_name  = get_stack_name(config)
         run_stack_deploy(config, stack_name)
@@ -476,6 +476,7 @@ def normalize_config_paths(config):
         cppdock["base_config"] = os.path.abspath(cppdock["base_config"])
     if "source_path" in cppdock:
         cppdock["source_path"] = os.path.abspath(cppdock["source_path"])
+
     return config
 
 def write_config_file(config, json_file_path):
@@ -773,6 +774,12 @@ def make_deps_dockerfile(config, platform_name):
     build_type = get_build_type(config, platform_name)
     target = get_dev_service_target(config, platform_name)
 
+    dev_service_init = get_dev_service_init(config, platform_name)
+    copy_dev_service_init = ''
+    if dev_service_init:
+        copy_dev_service_init = "COPY {} /opt/dev_service_init".format(
+                dev_service_init)
+
     for dep in deps:
         deps_stages += string.join([make_deps_stage(base_image, platform_name, dep)])
         deps_imports += make_deps_import(platform_name, dep[-1][2])
@@ -781,13 +788,15 @@ def make_deps_dockerfile(config, platform_name):
 {deps_stages}
 FROM {base_image}
 {deps_imports}
+    {copy_dev_service_init}
     WORKDIR /opt/build
     CMD cppdock init_dev_service --shell-only {build_type} {target}
-""".format(deps_stages  = deps_stages,
-           base_image   = base_image,
-           deps_imports = deps_imports,
-           build_type   = build_type,
-           target       = target)
+""".format(deps_stages              = deps_stages,
+           base_image               = base_image,
+           deps_imports             = deps_imports,
+           copy_dev_service_init    = copy_dev_service_init,
+           build_type               = build_type,
+           target                   = target)
     return
 
 def make_deps_stage(base_image, platform_name, deps):
@@ -848,7 +857,8 @@ def make_deps_import(platform, revision):
 def get_deps_from_config(config, platform_name):
     platform = config['platforms'][platform_name]
 
-    return [get_deps_stage_items(stage, platform['type']) for stage in platform['deps']]
+    return [get_deps_stage_items(stage, platform['type']) \
+        for stage in platform.get('deps', [])]
 
     raise ValueError('Platform is not specified in cppdock json file')
 
@@ -1009,7 +1019,11 @@ def get_dev_service_target(config, platform_name):
     service_target = platform.get('service_target')
     return platform.get('target') or service_target or 'check'
 
-def run_dev_service_cmake(build_type):
+def get_dev_service_init(config, platform_name):
+    platform = get_platform_config(config, platform_name)
+    return platform.get('dev_service_init')
+
+def run_dev_service_cmake(build_type, target):
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
         p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=' + build_type,
                               "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake'",
@@ -1020,7 +1034,20 @@ def run_dev_service_cmake(build_type):
                               '.'],
                              cwd = '/opt/build')
     p.communicate('')
-    return p.returncode == 0
+
+    if p.returncode == 0:
+        p = subprocess.Popen(['cmake', '--build', '.', '--target', target],
+                             cwd = '/opt/build')
+        p.communicate('')
+        return p
+
+    return None
+
+def run_dev_service_init(build_type, target):
+    p = subprocess.Popen(['/opt/dev_service_init', build_type, target],
+                         cwd = '/opt/build')
+    p.communicate('')
+    return p
 
 def run_dev_service_target(build_type, target, shell_only = False):
     # This should run in a docker container
@@ -1031,12 +1058,12 @@ def run_dev_service_target(build_type, target, shell_only = False):
         p = subprocess.call('/bin/bash')
         return
 
+    has_dev_service_init_= os.path.isfile('/opt/dev_service_init')
     p = None
-    command = "cmake --build . --target " + target
-    if run_dev_service_cmake(build_type) and target:
-        p = subprocess.Popen(['cmake', '--build', '.', '--target', target],
-                             cwd = '/opt/build')
-        p.communicate('')
+    if has_dev_service_init_:
+        p = run_dev_service_init(build_type, target)
+    else:
+        p = run_dev_service_cmake(build_type, target)
 
     # Make the service target and just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
@@ -1097,17 +1124,21 @@ def cluster_sync_source_init_node(config, name, script_data):
 
 def cluster_sync_source_rsync_node(config, name):
     pwd = config['cppdock']['source_path']
-    path = cluster_get_sync_path(pwd)
-    node_path = "ubuntu@{name}:{path}".format(name = name,
-                                              path = path)
-    print 'Syncing source code to ' + node_path
-    p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d',
-                          pwd + '/.',
-                          node_path])
-    p.communicate('')
+    base_sync_path = cluster_get_sync_path(pwd)
+    def sync_dir(path):
+        sync_path = os.path.join(base_sync_path, path)
+        node_path = "ubuntu@{name}:{sync_path}".format(name = name,
+                                                       sync_path = sync_path)
+        print 'Syncing source code to ' + node_path
+        p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d',
+                              os.path.join(pwd, path, '.'),
+                              node_path])
+        p.communicate('')
 
-    if p.returncode != 0:
-        raise RuntimeError("Failed to sync source files to {name}".format(name = name))
+        if p.returncode != 0:
+            raise RuntimeError("Failed to sync source files to {name}".format(name = name))
+
+    [sync_dir(x) for x in config['cppdock'].get('sync_dirs', [''])]
 
 def get_nginx_proxy_conf(config, platform_name):
     domain = get_domain(config, platform_name)
