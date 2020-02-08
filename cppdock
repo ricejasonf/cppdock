@@ -293,6 +293,7 @@ def command_dev(args):
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
     print_only = False
     make_build_image(config, platform_name, print_only)
+    cluster_sync_source(config)
     run_build_image(config, platform_name, ports_arg)
 
 def command_dev_cluster(args):
@@ -868,6 +869,9 @@ def get_deps_stage_items(deps_stage, platform_type):
 def run_build_image(config, platform_name, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
     pwd = config['cppdock']['source_path']
+    # TODO use cluster_sync_path if there are cluster machines
+    if is_cluster_mode(config):
+        pwd = cluster_get_sync_path(pwd)
     os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
 
 def run_stack_deploy(config, stack_name):
@@ -1023,7 +1027,7 @@ def get_dev_service_init(config, platform_name):
     platform = get_platform_config(config, platform_name)
     return platform.get('dev_service_init')
 
-def run_dev_service_cmake(build_type, target):
+def run_dev_service_cmake(build_type, target = None):
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
         p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=' + build_type,
                               "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake'",
@@ -1035,7 +1039,7 @@ def run_dev_service_cmake(build_type, target):
                              cwd = '/opt/build')
     p.communicate('')
 
-    if p.returncode == 0:
+    if p.returncode == 0 and target:
         p = subprocess.Popen(['cmake', '--build', '.', '--target', target],
                              cwd = '/opt/build')
         p.communicate('')
@@ -1043,27 +1047,29 @@ def run_dev_service_cmake(build_type, target):
 
     return None
 
-def run_dev_service_init(build_type, target):
-    p = subprocess.Popen(['/opt/dev_service_init', build_type, target],
-                         cwd = '/opt/build')
+def run_dev_service_init(build_type, target = None):
+    cmd = remove_none(['/opt/dev_service_init', build_type, target])
+    p = subprocess.Popen(cmd, cwd = '/opt/build')
     p.communicate('')
     return p
 
-def run_dev_service_target(build_type, target, shell_only = False):
+def run_dev_service_target(build_type, target,
+                           shell_only = False,
+                           stay_alive = True):
     # This should run in a docker container
-    # Initializes CMake if needed
+
+    has_init= os.path.isfile('/opt/dev_service_init')
+    init_fn = run_dev_service_init if has_init else run_dev_service_cmake
 
     if shell_only:
-        run_dev_service_cmake(build_type)
+        init_fn(build_type)
         p = subprocess.call('/bin/bash')
         return
 
-    has_dev_service_init_= os.path.isfile('/opt/dev_service_init')
-    p = None
-    if has_dev_service_init_:
-        p = run_dev_service_init(build_type, target)
-    else:
-        p = run_dev_service_cmake(build_type, target)
+    p = init_fn(build_type, target)
+
+    if not stay_alive:
+        return
 
     # Make the service target and just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
@@ -1084,7 +1090,6 @@ def cluster_get_worker_token():
 
 def cluster_get_sync_path(path):
     return "/home/ubuntu/sync{}".format(path)
-
 
 # rsyncs everything in pwd to machines in cluster
 def cluster_sync_source(config):
