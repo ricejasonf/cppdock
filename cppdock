@@ -111,6 +111,9 @@ def parse_args_dev(args):
                                         help      = 'Specify path to json file')
     parser.add_argument('-p', '--port', dest      = 'port',
                                         help      = 'Specify port to `docker run`')
+    parser.add_argument('--target',     dest      = 'target',
+                                        default   = None,
+                                        help      = 'Build target instead of shell')
 
     group  = parser.add_argument_group('required arguments')
     group.add_argument('platform',      help      = 'Name of target platform')
@@ -165,6 +168,10 @@ def parse_args_init_dev_service(args):
     parser.add_argument('--shell-only', dest      = 'shell_only',
                                         action    = 'store_true',
                                         help      = 'Run only as an interactive shell')
+    parser.add_argument('--no-service', dest      = 'keep_alive',
+                                        default   = True,
+                                        action    = 'store_false',
+                                        help      = 'Terminate container when process completes')
     group  = parser.add_argument_group('required arguments')
     group.add_argument('build_type',    help      = 'Build type')
     group.add_argument('target',        help      = 'Build target name')
@@ -290,11 +297,11 @@ def command_dev(args):
     config = load_config_file_with_args(args)
     set_master_machine(config)
     platform_name = args.platform
-    ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else ''
+    ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else None
     print_only = False
     make_build_image(config, platform_name, print_only)
     cluster_sync_source(config)
-    run_build_image(config, platform_name, ports_arg)
+    run_build_image(config, platform_name, args.target, ports_arg)
 
 def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
@@ -400,7 +407,10 @@ def command_install_src(args):
 
 def command_init_dev_service(args):
     # command run in container so config is not allowed
-    run_dev_service_target(args.build_type, args.target, args.shell_only)
+    p = run_dev_service_target(args.build_type, args.target,
+                               args.shell_only, args.keep_alive)
+    if p:
+        sys.exit(p.returncode)
 
 def command_cluster_build(args):
     config = load_config_file_with_args(args)
@@ -866,13 +876,22 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
-def run_build_image(config, platform_name, ports_arg):
+def run_build_image(config, platform_name, target, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
     pwd = config['cppdock']['source_path']
-    # TODO use cluster_sync_path if there are cluster machines
     if is_cluster_mode(config):
         pwd = cluster_get_sync_path(pwd)
-    os.system('docker run --rm -it ' + ports_arg + ' --mount type=bind,source=' + pwd + ',target=/opt/src,readonly ' + tag_name)
+
+    cmd = []
+    if target:
+        build_type = get_build_type(config, platform_name)
+        cmd = ["cppdock", "init_dev_service", build_type, target, '--no-service']
+    volume_name = get_dev_volume_name(config, platform_name)
+
+    subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg,
+                     '--mount', 'type=bind,source=' + pwd + ',target=/opt/src,readonly',
+                     '--volume', '{}:/opt/build'.format(volume_name),
+                     tag_name] + cmd))
 
 def run_stack_deploy(config, stack_name):
     # docker stack deploy is already idempotent
@@ -989,6 +1008,9 @@ def default_compose_file_service(config, platform_name):
         }
     }
 
+def get_dev_volume_name(config, platform_name):
+    return get_image_tag_name(config, platform_name, "dev")
+
 def get_build_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, "build")
 
@@ -996,7 +1018,7 @@ def get_base_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, 'base')
 
 def get_image_tag_name(config, platform_name, image_type):
-    assert(image_type in ['build', 'release', 'service', 'base', 'user_base'])
+    assert(image_type in ['build', 'release', 'service', 'base', 'user_base', 'dev'])
     return "{project}-{platform}{image_type}".format(
         project     = get_project_name(config),
         platform    = platform_name,
@@ -1055,7 +1077,7 @@ def run_dev_service_init(build_type, target = None):
 
 def run_dev_service_target(build_type, target,
                            shell_only = False,
-                           stay_alive = True):
+                           keep_alive = True):
     # This should run in a docker container
 
     has_init= os.path.isfile('/opt/dev_service_init')
@@ -1064,12 +1086,12 @@ def run_dev_service_target(build_type, target,
     if shell_only:
         init_fn(build_type)
         p = subprocess.call('/bin/bash')
-        return
+        return p
 
     p = init_fn(build_type, target)
 
-    if not stay_alive:
-        return
+    if not keep_alive:
+        return p
 
     # Make the service target and just hang out
     # Things will show up in the logs and the user can still shell in to inspect things
@@ -1081,6 +1103,7 @@ def run_dev_service_target(build_type, target,
 
     p = subprocess.Popen(['tail', '-f', '/dev/null'])
     p.communicate('')
+    return p
 
 def cluster_get_worker_token():
     try:
