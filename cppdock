@@ -45,6 +45,7 @@ def get_commands():
         'install_src':          (command_install_src,       parse_args_install_src),
         'init_dev_service':     (command_init_dev_service,  parse_args_init_dev_service),
         'cluster_build':        (command_cluster_build,     parse_args_cluster_build),
+        'cluster_sync':         (command_cluster_sync,      parse_args_cluster_sync),
         'cluster_start':        (command_cluster_start,     parse_args_cluster_start),
         'cluster_stop':         (command_cluster_stop,      parse_args_cluster_stop),
         'cluster_rm':           (command_cluster_rm,        parse_args_cluster_rm),
@@ -180,6 +181,10 @@ def parse_args_init_dev_service(args):
 
 def parse_args_cluster_build(args):
     parser = create_args_parser('cluster_build')
+    return parser.parse_args(args)
+
+def parse_args_cluster_sync(args):
+    parser = create_args_parser('cluster_sync')
     return parser.parse_args(args)
 
 def parse_args_cluster_start(args):
@@ -416,6 +421,10 @@ def command_cluster_build(args):
     config = load_config_file_with_args(args)
     machine_create_all(config)
     cluster_sync_source_init(config)
+
+def command_cluster_sync(args):
+    config = load_config_file_with_args(args)
+    cluster_sync_source_rsync(config)
 
 def command_cluster_start(args):
     config = load_config_file_with_args(args)
@@ -1135,6 +1144,13 @@ def cluster_sync_source_init(config):
 
     for name in machine_names:
         cluster_sync_source_init_node(config, name, script_data)
+        cluster_sync_source_rsync_node(config, name)
+
+def cluster_sync_source_rsync(config):
+    machines = get_machine_list(config)
+    machine_names = [x[0] for x in machines]
+
+    for name in machine_names:
         cluster_sync_source_rsync_node(config, name)
 
 def cluster_sync_source_init_node(config, name, script_data):
