@@ -115,6 +115,9 @@ def parse_args_dev(args):
     parser.add_argument('--target',     dest      = 'target',
                                         default   = None,
                                         help      = 'Build target instead of shell')
+    parser.add_argument('--shell',      dest      = 'shell',
+                                        action    = 'store_true',
+                                        help      = 'Forces shell after target builds')
 
     group  = parser.add_argument_group('required arguments')
     group.add_argument('platform',      help      = 'Name of target platform')
@@ -169,6 +172,9 @@ def parse_args_init_dev_service(args):
     parser.add_argument('--shell-only', dest      = 'shell_only',
                                         action    = 'store_true',
                                         help      = 'Run only as an interactive shell')
+    parser.add_argument('--shell',      dest      = 'shell',
+                                        action    = 'store_true',
+                                        help      = 'Run as an interactive shell')
     parser.add_argument('--no-service', dest      = 'keep_alive',
                                         default   = True,
                                         action    = 'store_false',
@@ -306,7 +312,7 @@ def command_dev(args):
     print_only = False
     make_build_image(config, platform_name, print_only)
     cluster_sync_source(config)
-    run_build_image(config, platform_name, args.target, ports_arg)
+    run_build_image(config, platform_name, args.target, args.shell, ports_arg)
 
 def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
@@ -413,7 +419,8 @@ def command_install_src(args):
 def command_init_dev_service(args):
     # command run in container so config is not allowed
     p = run_dev_service_target(args.build_type, args.target,
-                               args.shell_only, args.keep_alive)
+                               args.shell_only, args.shell,
+                               args.keep_alive)
     if p:
         sys.exit(p.returncode)
 
@@ -885,16 +892,19 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
-def run_build_image(config, platform_name, target, ports_arg):
+def run_build_image(config, platform_name, target, shell, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
     pwd = config['cppdock']['source_path']
     if is_cluster_mode(config):
         pwd = cluster_get_sync_path(pwd)
 
     cmd = []
+    shell_op = None
+    if shell:
+        shell_op = '--shell'
     if target:
         build_type = get_build_type(config, platform_name)
-        cmd = ["cppdock", "init_dev_service", build_type, target, '--no-service']
+        cmd = ["cppdock", "init_dev_service", build_type, target, shell_op, '--no-service']
     volume_name = get_dev_volume_name(config, platform_name)
 
     subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg,
@@ -1086,12 +1096,14 @@ def run_dev_service_init(build_type, target = None):
 
 def run_dev_service_target(build_type, target,
                            shell_only = False,
+                           shell      = False,
                            keep_alive = True):
     # This should run in a docker container
 
     has_init= os.path.isfile('/opt/dev_service_init')
     init_fn = run_dev_service_init if has_init else run_dev_service_cmake
 
+    # Do we need `shell_only`?
     if shell_only:
         init_fn(build_type)
         p = subprocess.call('/bin/bash')
@@ -1110,8 +1122,11 @@ def run_dev_service_target(build_type, target,
 
     # hang out so the container stays alive
 
-    p = subprocess.Popen(['tail', '-f', '/dev/null'])
-    p.communicate('')
+    if shell:
+        p = subprocess.call('/bin/bash')
+    else:
+        p = subprocess.Popen(['tail', '-f', '/dev/null'])
+        p.communicate('')
     return p
 
 def cluster_get_worker_token():
@@ -1170,17 +1185,9 @@ def cluster_sync_source_rsync_node(config, name):
     pwd = config['cppdock']['source_path']
     base_sync_path = cluster_get_sync_path(pwd)
     def sync_dir(path):
-        sync_path = os.path.join(base_sync_path, path)
-        node_path = "ubuntu@{name}:{sync_path}".format(name = name,
-                                                       sync_path = sync_path)
-        print 'Syncing source code to ' + node_path
-        p = subprocess.Popen(['docker-machine', 'scp', '-r', '-d',
-                              os.path.join(pwd, path, '.'),
-                              node_path])
-        p.communicate('')
-
-        if p.returncode != 0:
-            raise RuntimeError("Failed to sync source files to {name}".format(name = name))
+        src_path = os.path.join(pwd, path, '.')
+        dest_path = os.path.join(base_sync_path, path)
+        machine_rsync(name, src_path, dest_path)
 
     [sync_dir(x) for x in config['cppdock'].get('sync_dirs', [''])]
 
@@ -1667,6 +1674,31 @@ def machine_join_token(name, values):
     return subprocess.check_output(['docker', 'swarm',
                                     'join-token', '-q', kind])
 
+def machine_rsync(name, src_path, dest_path):
+    machine = machine_inspect(name);
+    driver = machine['Driver']
+    ssh_key_path = driver['SSHKeyPath']
+    node_path = "{user}@{ip_address}:{dest_path}".format(
+            user        = driver['SSHUser'],
+            ip_address  = driver['IPAddress'],
+            dest_path   = dest_path)
+    print 'Syncing source code to ' + node_path
+    ssh_command = ' '.join([
+        'ssh -i {}'.format(ssh_key_path),
+            '-o StrictHostKeyChecking=no',
+            '-o UserKnownHostsFile=/dev/null',
+            '-o LogLevel=quiet'
+            ])
+    subprocess.check_output(['rsync', '--recursive',
+                                      '--progress', 
+                                      '--times', 
+                                      '-e', ssh_command,
+                                      src_path, node_path])
+
+def machine_inspect(name):
+    result_s =  subprocess.check_output(['docker-machine', 'inspect', name])
+    return json.loads(result_s)
+
 def dev_registry_create():
     registry_name = 'cppdock-registry'
     subprocess.check_output(['docker', 'service', 'create', '--name',
@@ -1676,7 +1708,6 @@ def dev_registry_create():
 def dev_registry_rm():
     registry_name = 'cppdock-registry'
     subprocess.check_output(['docker', 'service', 'rm', 'cppdock-registry'])
-
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
