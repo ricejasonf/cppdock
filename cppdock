@@ -1620,8 +1620,10 @@ def machine_env(name, values):
         return dict(re.findall('export ([A-Z_]+)="([^"]+)"', raw))
 
 def machine_start_all(config):
-    names = get_machine_names(config)
-    subprocess.check_output(['docker-machine', 'start'] + list(names))
+    name_list = list(get_machine_names(config))
+    subprocess.check_output(['docker-machine', 'start'] + name_list)
+    subprocess.check_output(['docker-machine', 'regenerate-certs',
+                                               '--force'] + name_list)
 
 def machine_stop_all(config):
     names = get_machine_names(config)
@@ -1676,11 +1678,12 @@ def machine_join_token(name, values):
 
 def machine_rsync(name, src_path, dest_path):
     machine = machine_inspect(name);
+    ip_address = machine_ip_address(name)
     driver = machine['Driver']
     ssh_key_path = driver['SSHKeyPath']
     node_path = "{user}@{ip_address}:{dest_path}".format(
             user        = driver['SSHUser'],
-            ip_address  = driver['IPAddress'],
+            ip_address  = ip_address,
             dest_path   = dest_path)
     print 'Syncing source code to ' + node_path
     ssh_command = ' '.join([
@@ -1698,6 +1701,10 @@ def machine_rsync(name, src_path, dest_path):
 def machine_inspect(name):
     result_s =  subprocess.check_output(['docker-machine', 'inspect', name])
     return json.loads(result_s)
+
+def machine_ip_address(name):
+    result_s =  subprocess.check_output(['docker-machine', 'ip', name])
+    return result_s.strip()
 
 def dev_registry_create():
     registry_name = 'cppdock-registry'
