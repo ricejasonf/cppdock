@@ -118,6 +118,9 @@ def parse_args_dev(args):
     parser.add_argument('--shell',      dest      = 'shell',
                                         action    = 'store_true',
                                         help      = 'Forces shell after target builds')
+    parser.add_argument('--privileged', dest      = 'privileged',
+                                        action    = 'store_true',
+                                        help      = 'Runs container with all host capabilities')
 
     group  = parser.add_argument_group('required arguments')
     group.add_argument('platform',      help      = 'Name of target platform')
@@ -312,7 +315,8 @@ def command_dev(args):
     print_only = False
     make_build_image(config, platform_name, print_only)
     cluster_sync_source(config)
-    run_build_image(config, platform_name, args.target, args.shell, ports_arg)
+    run_build_image(config, platform_name, args.target, args.shell,
+                    args.privileged, ports_arg)
 
 def command_dev_cluster(args):
     config      = load_config_file_with_args(args)
@@ -892,22 +896,21 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
-def run_build_image(config, platform_name, target, shell, ports_arg):
+def run_build_image(config, platform_name, target, shell, privileged, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
     pwd = config['cppdock']['source_path']
     if is_cluster_mode(config):
         pwd = cluster_get_sync_path(pwd)
 
     cmd = []
-    shell_op = None
-    if shell:
-        shell_op = '--shell'
+    shell_op = '--shell' if shell else None;
+    privileged_op = '--privileged' if privileged else None;
     if target:
         build_type = get_build_type(config, platform_name)
         cmd = ["cppdock", "init_dev_service", build_type, target, shell_op, '--no-service']
     volume_name = get_dev_volume_name(config, platform_name)
 
-    subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg,
+    subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg, privileged_op,
                      '--mount', 'type=bind,source=' + pwd + ',target=/opt/src,readonly',
                      '--volume', '{}:/opt/build'.format(volume_name),
                      tag_name] + cmd))
