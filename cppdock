@@ -432,10 +432,11 @@ def command_cluster_build(args):
     config = load_config_file_with_args(args)
     machine_create_all(config)
     cluster_sync_source_init(config)
+    cluster_sync_source(config)
 
 def command_cluster_sync(args):
     config = load_config_file_with_args(args)
-    cluster_sync_source_rsync(config)
+    cluster_sync_source(config)
 
 def command_cluster_start(args):
     config = load_config_file_with_args(args)
@@ -898,9 +899,7 @@ def get_deps_stage_items(deps_stage, platform_type):
 
 def run_build_image(config, platform_name, target, shell, privileged, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
-    pwd = config['cppdock']['source_path']
-    if is_cluster_mode(config):
-        pwd = cluster_get_sync_path(pwd)
+    src_path = get_build_source_path(config)
 
     cmd = []
     shell_op = '--shell' if shell else None;
@@ -911,7 +910,7 @@ def run_build_image(config, platform_name, target, shell, privileged, ports_arg)
     volume_name = get_dev_volume_name(config, platform_name)
 
     subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg, privileged_op,
-                     '--mount', 'type=bind,source=' + pwd + ',target=/opt/src,readonly',
+                     '--mount', 'type=bind,source=' + src_path + ',target=/opt/src,readonly',
                      '--volume', '{}:/opt/build'.format(volume_name),
                      tag_name] + cmd))
 
@@ -981,9 +980,7 @@ def get_dev_compose_file_service(config, platform_name):
     if web_root:
         web_root = "web_root:{0}".format(web_root)
 
-    pwd = config['cppdock']['source_path']
-    remote_pwd = cluster_get_sync_path(pwd)
-    src_mount_path = remote_pwd if is_cluster_mode(config) else pwd
+    src_mount_path = get_build_source_path(config)
     src_mount = '{src_mount_path}:/opt/src:ro'.format(src_mount_path = src_mount_path)
     domain = get_domain(config, platform_name)
     environment = { 'DOMAIN': domain }
@@ -1141,8 +1138,10 @@ def cluster_get_worker_token():
 def cluster_get_sync_path(path):
     return "/home/ubuntu/sync{}".format(path)
 
-# rsyncs everything in pwd to machines in cluster
 def cluster_sync_source(config):
+    if not config['cppdock'].get('source_path'):
+        print 'Skipping source code sync'
+        return
     machines = get_machine_list(config)
     machine_names = [x[0] for x in machines]
     for name in machine_names:
@@ -1162,18 +1161,9 @@ def cluster_sync_source_init(config):
 
     for name in machine_names:
         cluster_sync_source_init_node(config, name, script_data)
-        cluster_sync_source_rsync_node(config, name)
-
-def cluster_sync_source_rsync(config):
-    machines = get_machine_list(config)
-    machine_names = [x[0] for x in machines]
-
-    for name in machine_names:
-        cluster_sync_source_rsync_node(config, name)
 
 def cluster_sync_source_init_node(config, name, script_data):
-    pwd = config['cppdock']['source_path']
-    path = cluster_get_sync_path(pwd)
+    path = get_build_source_path(config)
     print 'Initializing source code on {}'.format(name)
     p = subprocess.Popen(['docker-machine', 'ssh', name, 'bash', '-s'],
                          stdin = subprocess.PIPE)
@@ -1185,10 +1175,11 @@ def cluster_sync_source_init_node(config, name, script_data):
                 name = name))
 
 def cluster_sync_source_rsync_node(config, name):
-    pwd = config['cppdock']['source_path']
-    base_sync_path = cluster_get_sync_path(pwd)
+    base_src_path = config['cppdock']['source_path']
+    assert base_src_path, 'Config cppdock.source_path must be set'
+    base_sync_path = get_build_source_path(config)
     def sync_dir(path):
-        src_path = os.path.join(pwd, path, '.')
+        src_path = os.path.join(base_src_path, path, '.')
         dest_path = os.path.join(base_sync_path, path)
         machine_rsync(name, src_path, dest_path)
 
@@ -1718,6 +1709,14 @@ def dev_registry_create():
 def dev_registry_rm():
     registry_name = 'cppdock-registry'
     subprocess.check_output(['docker', 'service', 'rm', 'cppdock-registry'])
+
+def get_build_source_path(config):
+    path = config['cppdock'].get('source_path')
+    if is_cluster_mode(config):
+        path = path or os.path.abspath('./source')
+        path = cluster_get_sync_path(path)
+    assert path, 'Unable to create source path for build'
+    return path
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
