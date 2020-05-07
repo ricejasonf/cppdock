@@ -1072,8 +1072,15 @@ def get_dev_service_target(config, platform_name):
     return platform.get('target') or service_target or 'check'
 
 def get_dev_service_init(config, platform_name):
-    platform = get_platform_config(config, platform_name)
-    return platform.get('dev_service_init')
+    base_path = os.path.join(root_path, 'cppdock_recipes')
+    path1 = os.path.join(base_path, 'this-' + platform)
+    path2 = os.path.join(base_path, 'this')
+    if os.path.isfile(path1):
+        return path1
+    elif os.path.isfile(path2)
+        return path2
+    else:
+        return None
 
 def run_dev_service_cmake(build_type, target = None):
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
