@@ -468,8 +468,6 @@ def load_config_file(json_file_path):
     config_paths.insert(0, json_file_path)
     config = load_config_file_json(json_file_path)
 
-    # we do not attempt to lock deps in the base_config
-    config = initialize_source_code(config)
     config = lock_config_file_deps(config)
     write_config_file(config, json_file_path)
 
@@ -477,11 +475,12 @@ def load_config_file(json_file_path):
     config = merge_base_config(config, config_paths)
     config = process_config_replace_deps(config)
 
+    source = config.get('source', {})
+    config['source'] = source
+    source['allow_sync'] = calculate_allow_sync(config)
+    source["path"] = calculate_source_path(config, config_paths)
 
     cppdock = config['cppdock']
-    cppdock['allow_sync'] = calculate_allow_sync(cppdock)
-    cppdock["source_path"] = calculate_source_path(cppdock,
-                                                   config_paths)
     cppdock["cppdock_image"] = cppdock.get("cppdock_image",
                                            "ricejasonf/cppdock")
     config["machine_list"] = get_machine_list(config)
@@ -505,10 +504,11 @@ def load_config_file_json(json_file_path):
 def normalize_config_paths(config):
     # this should happen after writing revision locks
     cppdock = config["cppdock"]
+    source = config.get("source")
     if "base_config" in cppdock:
         cppdock["base_config"] = os.path.abspath(cppdock["base_config"])
-    if "source_path" in cppdock and cppdock["source_path"] != None:
-        cppdock["source_path"] = os.path.abspath(cppdock["source_path"])
+    if source and "path" in source and source["path"] != None:
+        source["path"] = os.path.abspath(source["path"])
 
     return config
 
@@ -560,26 +560,6 @@ def process_config_replace_deps(config):
     # TODO read "replace_deps" to replace all deps with a
     #      specified name or a dep with a specific id
     #      not sure if this is desirable yet
-    return config
-
-def initialize_source_code(config):
-    # this initializes the source code on the local machine
-    source_init = config['cppdock'].get('source_init')
-    is_source_path_set = 'source_path' in config['cppdock']
-
-    if is_source_path_set or source_init:
-        assert not config['cppdock'].get('base_config'), \
-            '"base_config" may not be set with "source_init" or "source_path"'
-    if is_source_path_set or not source_init:
-        return config
-
-    source_path = './source/'
-    print "Initializing local source code to {}".format(os.path.abspath(source_path))
-    os.mkdir(source_path)
-    script_path = os.path.join('..', source_init)
-    subprocess.check_output([script_path, '--local'], cwd = source_path)
-
-    config['cppdock']['source_path'] = source_path
     return config
 
 def lock_config_file_deps(config):
@@ -1072,12 +1052,12 @@ def get_dev_service_target(config, platform_name):
     return platform.get('target') or service_target or 'check'
 
 def get_dev_service_init(config, platform_name):
-    base_path = os.path.join(root_path, 'cppdock_recipes')
-    path1 = os.path.join(base_path, 'this-' + platform)
+    base_path = os.path.join('.', 'cppdock_recipes')
+    path1 = os.path.join(base_path, 'this-' + platform_name)
     path2 = os.path.join(base_path, 'this')
     if os.path.isfile(path1):
         return path1
-    elif os.path.isfile(path2)
+    elif os.path.isfile(path2):
         return path2
     else:
         return None
@@ -1102,9 +1082,13 @@ def run_dev_service_cmake(build_type, target = None):
 
     return None
 
-def run_dev_service_init(build_type, target = None):
-    cmd = remove_none(['/opt/dev_service_init', build_type, target])
-    p = subprocess.Popen(cmd, cwd = '/opt/build')
+def run_dev_service_init(build_type, target, init_only = ''):
+    cmd = remove_none(['/opt/dev_service_init'])
+    env = dict(os.environ, BUILD_TYPE   = build_type,
+                           TARGET       = target,
+                           INIT_ONLY    = init_only)
+                           
+    p = subprocess.Popen(cmd, cwd = '/opt/build', env = env)
     p.communicate('')
     return p
 
@@ -1118,7 +1102,7 @@ def run_dev_service_target(build_type, target,
     init_fn = run_dev_service_init if has_init else run_dev_service_cmake
 
     if shell_only:
-        init_fn(build_type)
+        init_fn(build_type, '', "INIT_ONLY")
         p = subprocess.Popen(['/bin/bash'])
         p.communicate('')
         return p
@@ -1168,11 +1152,19 @@ def cluster_sync_source_init(config):
     machines = get_machine_list(config)
     machine_names = [x[0] for x in machines]
 
-    source_init = config['cppdock'].get('source_init')
     script_data = ''
+    source_init = config['source'].get('init')
+    source_repo = config['source'].get('repo')
     if source_init:
         with open(source_init, 'r') as fh:
             script_data += fh.read()
+    elif source_repo:
+        source_repo_tag = config['cppdock'].get('tag', 'master')
+        script_data = "git clone --depth 1 --branch {tag} --single-branch {repo} .".format(
+                repo = source_repo,
+                tag  = source_repo_tag)
+    else:
+        script_data = ''
 
     for name in machine_names:
         cluster_sync_source_init_node(config, name, script_data)
@@ -1191,8 +1183,8 @@ def cluster_sync_source_init_node(config, name, script_data):
 
 def cluster_sync_source_rsync_node(config, name):
     assert is_allowed_cluster_sync(config), "Must not attempt to rsync with nothing"
-    base_src_path = config['cppdock']['source_path']
-    assert base_src_path, 'Config cppdock.source_path must be set'
+    base_src_path = config['source']['path']
+    assert base_src_path, 'Config source.path must be set'
     base_sync_path = get_build_source_path(config)
     def sync_dir(path):
         src_path = os.path.join(base_src_path, path, '.')
@@ -1495,7 +1487,7 @@ def make_secret_file(name, data):
         fh.write(data)
 
 def get_secret_files():
-    # We never want to look in the source_path for secrets
+    # We never want to look in the source.path for secrets
     # so this is a valid use of getcwd
     secrets_dir = os.path.join(os.getcwd(), 'cppdock_secrets')
     if not os.path.isdir(secrets_dir):
@@ -1727,27 +1719,31 @@ def dev_registry_rm():
     registry_name = 'cppdock-registry'
     subprocess.check_output(['docker', 'service', 'rm', 'cppdock-registry'])
 
-def calculate_source_path(cppdock, config_paths):
+def calculate_source_path(config, config_paths):
     # should be called AFTER config rewrite
-    if "source_path" in cppdock:
-        source_path = cppdock["source_path"]
+    source = config["source"]
+    if source and "path" in source:
+        path = source["path"]
     else:
-        source_path = config_paths[0]
+        path = config_paths[0]
 
-    if source_path and not os.path.isdir(source_path):
-        source_path = os.path.dirname(source_path)
-    return source_path
+    if path and not os.path.isdir(path):
+        path = os.path.dirname(path)
+    return path
 
-def calculate_allow_sync(cppdock):
-    # if source_path is explicitly null then
+def calculate_allow_sync(config):
+    # should be called AFTER config rewrite
+    # if source path is explicitly null then
     # forbid rsync no matter what
-    is_source_path_set = 'source_path' in cppdock
-    if is_source_path_set and cppdock['source_path'] == None:
-        return False
-    return cppdock.get('allow_sync', True)
+    source = config.get('source')
+    if source and 'path' in source and source['path'] != None:
+        return source.get('allow_sync', True)
+
+    return False
 
 def get_build_source_path(config):
-    path = config['cppdock'].get('source_path')
+    # do we imply source path when we set cppdock.base_config?
+    path = config['source']['path']
     if is_cluster_mode(config):
         path = path or os.path.abspath('./source')
         path = cluster_get_sync_path(path)
@@ -1755,7 +1751,7 @@ def get_build_source_path(config):
     return path
 
 def is_allowed_cluster_sync(config):
-    return config['cppdock']['allow_sync']
+    return config['source']['allow_sync']
 
 
 
