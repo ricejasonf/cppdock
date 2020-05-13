@@ -37,6 +37,7 @@ def get_commands():
     return {
         'init':                 (command_init,              parse_args_init),
         'build':                (command_build,             parse_args_build),
+        'release':              (command_release,           parse_args_release),
         'gen_certs':            (command_gen_certs,         parse_args_gen_certs),
         'dev':                  (command_dev,               parse_args_dev),
         'dev_cluster':          (command_dev_cluster,       parse_args_dev_cluster),
@@ -88,6 +89,17 @@ def parse_args_build(args):
     parser.add_argument('--print-only', dest      = 'print_only',
                                         action    = 'store_true',
                                         help      = 'Print Dockerfile without building')
+    parser.add_argument('platform',     default   = None,
+                                        nargs     = '?',
+                                        help      = 'Name of target platform')
+
+    return parser.parse_args(args)
+
+def parse_args_release(args):
+    parser = argparse.ArgumentParser(prog='cppdock release')
+    parser.add_argument('-f', '--file', dest      = 'json_file_path',
+                                        default   = default_json_file_path,
+                                        help      = 'Specify path to json file')
     parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of target platform')
@@ -265,6 +277,22 @@ def command_build(args):
     for platform in platforms:
         make_build_image(config, platform, args.print_only)
 
+def command_release(args):
+    config = load_config_file_with_args(args)
+    config['__default_build_type'] = 'release'
+    set_master_machine(config)
+    print_only = False
+
+    platforms = [args.platform] if args.platform else get_all_platforms(config)
+    for platform in platforms:
+        make_build_image(config, platform, print_only)
+        install_dir = create_install_dir(config, platform)
+        clean_install_files(config, platform, install_dir)
+        run_build_image_install(config, platform, install_dir)
+        make_release_image(config, platform, install_dir)
+        clean_install_files(config, platform, install_dir)
+        remove_install_dir(config, install_dir)
+
 def make_build_image(config, platform_name, print_only = False):
     if is_platform_service(config, platform_name):
         fn = make_service_image_fn(config, platform_name)
@@ -275,6 +303,27 @@ def make_build_image(config, platform_name, print_only = False):
     dockerfile = make_deps_dockerfile(config, platform_name)
     tag_name = get_build_tag_name(config, platform_name)
     make_docker_image(tag_name, dockerfile, print_only)
+
+def make_release_image(config, platform_name, context_dir):
+    if is_platform_service(config, platform_name):
+        return
+    print_only = False
+    build_tag_name = get_build_tag_name(config, platform_name)
+    release_tag_name = get_release_tag_name(config, platform_name)
+    dockerfile = make_release_dockerfile(config, platform_name,
+                                         build_tag_name)
+    make_docker_image(release_tag_name, dockerfile, print_only, context_dir)
+    return release_tag_name
+
+def make_release_dockerfile(config, platform_name, build_image):
+    base_image = "ubuntu:bionic" # TODO use config or something
+    
+    return """
+FROM {base_image}
+    COPY ./ /opt/install
+    WORKDIR /opt/install
+""".format(base_image = base_image)
+     
 
 def make_service_image_fn(config, platform_name):
     service_type = get_service_type(config, platform_name)
@@ -728,12 +777,13 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_docker_image(tag_name, dockerfile_data, print_only = False):
+def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
     if print_only:
         print '###### Docker Image: ' + tag_name + ' ######'
         print dockerfile_data
         return
-    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name, '--file=-', '.'], stdin=subprocess.PIPE)
+    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name,
+                          '--file=-', context_dir], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile_data)
     if p.returncode == 0:
         print "Finished building {0}.".format(tag_name)
@@ -879,9 +929,19 @@ def get_deps_from_config(config, platform_name):
 def get_deps_stage_items(deps_stage, platform_type):
     return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
 
+def get_run_options_mount_source(config):
+    src_path = get_build_source_path(config)
+    return ['--mount', 'type=bind,source=' + src_path + ',target=/opt/src,readonly']
+
+def get_run_options_mount_build(config, platform_name):
+    volume_name = get_volume_name(config, platform_name)
+    return ['--volume', '{}:/opt/build'.format(volume_name)]
+
+def get_run_options_mount_install(config, platform_name, install_dir):
+    return ['--mount', 'type=bind,source=' + install_dir + ',target=/opt/install']
+
 def run_build_image(config, platform_name, target, shell, shell_only, privileged, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
-    src_path = get_build_source_path(config)
 
     cmd = []
     shell_op = '--shell' if shell else None;
@@ -891,14 +951,73 @@ def run_build_image(config, platform_name, target, shell, shell_only, privileged
         build_type = get_build_type(config, platform_name)
         cmd = ["cppdock", "init_dev_service", build_type, target, shell_op,
                shell_only_op, '--no-service']
-    volume_name = get_dev_volume_name(config, platform_name)
-    mount_src = ['--mount', 'type=bind,source=' + src_path + ',target=/opt/src,readonly']
-    mount_build = ['--volume', '{}:/opt/build'.format(volume_name)]
+    mount_build = get_run_options_mount_build(config, platform_name)
+    mount_src = get_run_options_mount_source(config)
 
     subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg, privileged_op]
                                  + mount_src 
                                  + mount_build
                                  + [ tag_name ]
+                                 + cmd))
+
+def run_build_image_install(config, platform_name, install_dir):
+    tag_name = get_build_tag_name(config, platform_name)
+    src_path = get_build_source_path(config)
+    target = get_release_target(config, platform_name)
+    build_type = get_build_type(config, platform_name)
+
+    cmd = ["cppdock", "init_dev_service", build_type, target, '--no-service']
+
+    mount_build = get_run_options_mount_build(config, platform_name)
+    mount_src = get_run_options_mount_source(config)
+    mount_install = get_run_options_mount_install(config, platform_name, install_dir)
+    subprocess.call(remove_none(['docker', 'run', '--rm']
+                                 + mount_src 
+                                 + mount_build
+                                 + mount_install
+                                 + [ tag_name ]
+                                 + cmd))
+
+def create_install_dir(config, platform):
+    path = '/tmp/{}.install'.format(get_release_tag_name(config, platform))
+    cmd = ['mkdir', '-p', path]
+
+    if is_cluster_mode(config):
+        cmd = ['docker-machine', 'ssh', name] + cmd
+
+    p = subprocess.Popen(cmd, stdin = subprocess.PIPE)
+    p.communicate()
+
+    if p.returncode != 0:
+        raise RuntimeError(
+            'Failed to create install directory: {}'.format(path))
+    return path
+
+def remove_install_dir(config, path):
+    assert path.startswith('/tmp/') and path.endswith('.install'), "Must only delete valid install path"
+    cmd = ['rmdir', path]
+
+    if is_cluster_mode(config):
+        cmd = ['docker-machine', 'ssh', name] + cmd
+
+    p = subprocess.Popen(cmd, stdin = subprocess.PIPE)
+    p.communicate()
+
+    if p.returncode != 0:
+        raise RuntimeError(
+            'Failed to remove install directory: {}'.format(path))
+    return path
+
+def clean_install_files(config, platform_name, install_dir):
+    # We have to delete the installs files in a container
+    # because the cppdock user wont have to permissions
+    base_image = "ubuntu:bionic" # TODO use config or something
+    assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
+    cmd = ['rm', '-rf', '/opt/install/*']
+    mount_install = get_run_options_mount_install(config, platform_name, install_dir)
+    subprocess.call(remove_none(['docker', 'run', '--rm']
+                                 + mount_install
+                                 + [ base_image ]
                                  + cmd))
 
 def run_stack_deploy(config, stack_name):
@@ -1014,17 +1133,20 @@ def default_compose_file_service(config, platform_name):
         }
     }
 
-def get_dev_volume_name(config, platform_name):
-    return get_image_tag_name(config, platform_name, "dev")
+def get_volume_name(config, platform_name):
+    build_type = get_build_type(config, platform_name).lower()
+    return get_image_tag_name(config, platform_name, build_type)
 
 def get_build_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, "build")
+
+def get_release_tag_name(config, platform_name):
+    return get_image_tag_name(config, platform_name, "release")
 
 def get_base_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, 'base')
 
 def get_image_tag_name(config, platform_name, image_type):
-    assert(image_type in ['build', 'release', 'service', 'base', 'user_base', 'dev'])
     return "{project}-{platform}{image_type}".format(
         project     = get_project_name(config),
         platform    = platform_name,
@@ -1033,12 +1155,6 @@ def get_image_tag_name(config, platform_name, image_type):
 
 def get_stack_name(config):
     return get_project_name(config)
-
-def default_build_type(config, platform_name):
-    if config['platforms'][platform_name]['type'] == 'emscripten' :
-        return 'Release'
-    else:
-        return 'Debug'
 
 def get_all_platforms(config):
     return config['platforms'].keys()
@@ -1062,10 +1178,12 @@ def get_dev_service_init(config, platform_name):
     else:
         return None
 
-def run_dev_service_cmake(build_type, target = None):
+def run_dev_service_cmake(build_type, target = None, init_only = ''):
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
-        p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=' + build_type,
-                              "-DCMAKE_TOOLCHAIN_FILE='/opt/toolchain.cmake'",
+        p = subprocess.Popen(['cmake',
+                              '-DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake',
+                              '-DCMAKE_INSTALL_PREFIX=/opt/install',
+                              '-DCMAKE_BUILD_TYPE=' + build_type,
                               '/opt/src'],
                              cwd = '/opt/build')
     else:
@@ -1074,7 +1192,7 @@ def run_dev_service_cmake(build_type, target = None):
                              cwd = '/opt/build')
     p.communicate('')
 
-    if p.returncode == 0 and target:
+    if p.returncode == 0 and target and not init_only:
         p = subprocess.Popen(['cmake', '--build', '.', '--target', target],
                              cwd = '/opt/build')
         p.communicate('')
@@ -1523,6 +1641,11 @@ def get_build_type(config, platform_name):
     default = config.get('__default_build_type', 'debug')
     return platform.get('build_type') \
         or config['cppdock'].get('build_type', default)
+
+def get_release_target(config, platform_name):
+    platform = get_platform_config(config, platform_name)
+    return platform.get('release_target', 'install')
+    
 
 def dev_cluster_stop(config):
     stack_name  = get_stack_name(config)
