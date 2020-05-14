@@ -329,7 +329,12 @@ def make_release_image(config, platform_name, context_dir):
     release_tag_name = get_release_tag_name(config, platform_name)
     dockerfile = make_release_dockerfile(config, platform_name,
                                          build_tag_name)
-    make_docker_image(release_tag_name, dockerfile, print_only, context_dir)
+    if is_cluster_mode(config):
+        machine_name = get_master_machine_name(config)
+        make_docker_image_remote(machine_name, release_tag_name, dockerfile,
+                                 context_dir) 
+    else:
+        make_docker_image(release_tag_name, dockerfile, print_only)
     return release_tag_name
 
 def make_release_dockerfile(config, platform_name, build_image):
@@ -827,13 +832,32 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
+def make_docker_image(tag_name, dockerfile_data, print_only = False):
     if print_only:
         print '###### Docker Image: ' + tag_name + ' ######'
         print dockerfile_data
         return
+    context_dir = '.'
     p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name,
                           '--file=-', context_dir], stdin=subprocess.PIPE)
+    out, err = p.communicate(dockerfile_data)
+    if p.returncode == 0:
+        print "Finished building {0}.".format(tag_name)
+    else:
+        print """
+
+    FAILURE: Build of {0} FAILED.
+
+        """.format(tag_name)
+        sys.exit(1)
+
+    return (p.returncode, out, err)
+
+def make_docker_image_remote(machine_name, tag_name, dockerfile_data, context_dir):
+    # runs docker build on specifed machine
+    cmd = ['docker', 'build', '--tag=' + tag_name, '--file=-', context_dir]
+    cmd = ['docker-machine', 'ssh', machine_name, 'sudo'] + cmd
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile_data)
     if p.returncode == 0:
         print "Finished building {0}.".format(tag_name)
@@ -1036,6 +1060,7 @@ def create_install_dir(config, platform):
     cmd = ['mkdir', '-p', path]
 
     if is_cluster_mode(config):
+        name = get_master_machine_name(config)
         cmd = ['docker-machine', 'ssh', name] + cmd
 
     p = subprocess.Popen(cmd, stdin = subprocess.PIPE)
@@ -1053,6 +1078,7 @@ def remove_install_dir(config, path):
     cmd = ['rmdir', path]
 
     if is_cluster_mode(config):
+        name = get_master_machine_name(config)
         cmd = ['docker-machine', 'ssh', name] + cmd
 
     p = subprocess.Popen(cmd, stdin = subprocess.PIPE)
@@ -1775,6 +1801,12 @@ def set_master_machine(config):
     machines = get_machine_list(config)
     if len(machines) > 0:
         set_machine(*(machines[0]))
+
+def get_master_machine_name(config):
+    machines = get_machine_list(config)
+    machine_names = [x[0] for x in machines]
+    assert len(machine_names) > 0
+    return machine_names[0]
 
 def set_machine(name, values):
     x = machine_env(name, values)
