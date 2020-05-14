@@ -1068,15 +1068,15 @@ def clean_install_files(config, platform_name, install_dir):
     # because the cppdock user wont have to permissions
     if not os.path.isdir(install_dir):
         return
-    base_image = "ubuntu:bionic" # TODO use config or something
+    base_image = config['cppdock']['cppdock_image']
     assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
-    cmd = ['/bin/bash', '-s', 'rm', '-rf', '/opt/install/*']
+    cmd = ['/bin/bash', '-c', 'rm -rf /opt/install/*']
     mount_install = get_run_options_mount_install(config, platform_name, install_dir)
     cmd = remove_none(['docker', 'run', '--rm']
                       + mount_install
                       + [ base_image ]
                       + cmd)
-    subprocess.check_output(cmd, stderr=subprocess.PIPE)
+    subprocess.call(cmd)
 
 def run_stack_deploy(config, stack_name):
     # docker stack deploy is already idempotent
