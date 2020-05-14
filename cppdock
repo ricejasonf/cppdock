@@ -267,8 +267,17 @@ def command_complete(args_str):
     elif length == 3:
         # complete platform
         subcommand = args[1]
-        if subcommand in ['build', 'dev']:
+        if subcommand in ['build', 'dev', 'release']:
             completion = args[2]
+            config = load_config_file(default_json_file_path)
+            candidates = get_all_platforms(config)
+        if subcommand == 'clean':
+            completion = args[2]
+            candidates = ['all', 'build', 'install', 'release']
+    elif length == 4:
+        subcommand = args[1]
+        if subcommand in ['clean']:
+            completion = args[3]
             config = load_config_file(default_json_file_path)
             candidates = get_all_platforms(config)
 
