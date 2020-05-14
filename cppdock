@@ -1045,12 +1045,14 @@ def run_build_image_install(config, platform_name, install_dir):
     mount_build = get_run_options_mount_build(config, platform_name)
     mount_src = get_run_options_mount_source(config)
     mount_install = get_run_options_mount_install(config, platform_name, install_dir)
-    subprocess.call(remove_none(['docker', 'run', '--rm']
+    returncode = subprocess.call(remove_none(['docker', 'run', '--rm']
                                  + mount_src 
                                  + mount_build
                                  + mount_install
                                  + [ tag_name ]
                                  + cmd))
+    if returncode != 0:
+        sys.exit(1)
 
 def get_install_path(config, platform):
     return '/tmp/{}.install'.format(get_release_tag_name(config, platform))
