@@ -50,6 +50,7 @@ def get_commands():
         'cluster_start':        (command_cluster_start,     parse_args_cluster_start),
         'cluster_stop':         (command_cluster_stop,      parse_args_cluster_stop),
         'cluster_rm':           (command_cluster_rm,        parse_args_cluster_rm),
+        'clean':                (command_clean,             parse_args_clean),
         '_complete':            (command_complete,          lambda _ : os.sys.argv[2]),
     }
 
@@ -223,6 +224,16 @@ def parse_args_cluster_rm(args):
     parser = create_args_parser('cluster_rm')
     return parser.parse_args(args)
 
+def parse_args_clean(args):
+    parser = create_args_parser('clean')
+    group  = parser.add_argument_group('required arguments')
+    group.add_argument('clean_type',    help      = 'Type to specify subset of files or images to delete',
+                                        choices   = ['build', 'install', 'images', 'all'])
+    parser.add_argument('platform',     default   = None,
+                                        nargs     = '?',
+                                        help      = 'Name of target platform')
+    return parser.parse_args(args)
+
 def dispatch(command_args, cli_args):
     command = parse_args_command(command_args).command
     commands = get_commands()
@@ -287,11 +298,8 @@ def command_release(args):
     for platform in platforms:
         make_build_image(config, platform, print_only)
         install_dir = create_install_dir(config, platform)
-        clean_install_files(config, platform, install_dir)
         run_build_image_install(config, platform, install_dir)
         make_release_image(config, platform, install_dir)
-        clean_install_files(config, platform, install_dir)
-        remove_install_dir(config, install_dir)
 
 def make_build_image(config, platform_name, print_only = False):
     if is_platform_service(config, platform_name):
@@ -501,6 +509,39 @@ def command_cluster_stop(args):
 def command_cluster_rm(args):
     config = load_config_file_with_args(args)
     machine_rm_all(config)
+
+def command_clean(args):
+    # Use `cppdock dev_cluster --stop` for deployed stacks.
+    config = load_config_file_with_args(args)
+    set_master_machine(config)
+    platforms = [args.platform] if args.platform else get_all_platforms(config)
+    clean_types = [args.clean_type] if args.clean_type != 'all' else ['install',
+                                                                      'build',
+                                                                      'images']
+    for clean_type in clean_types:
+        for platform_name in platforms:
+            if clean_type == 'install':
+                # remove the host machine install directory
+                install_dir = get_install_path(config, platform_name)
+                clean_install_files(config, platform_name, install_dir)
+                remove_install_dir(config, install_dir)
+            elif clean_type == 'build':
+                # remove the build volume
+                subprocess.check_output(['docker', 'volume', 'rm', '--force',
+                        get_volume_name(config, platform_name, 'release'),
+                        get_volume_name(config, platform_name, 'debug')])
+            elif clean_type == 'images':
+                # remove all build and release images
+                tag_names = [get_build_tag_name(config, platform_name),
+                             get_base_tag_name(config, platform_name),
+                             get_release_tag_name(config, platform_name)]
+                subprocess.check_output(['docker', 'image', 'rm', '--force',
+                                         get_build_tag_name(config, platform_name),
+                                         get_base_tag_name(config, platform_name),
+                                         get_release_tag_name(config, platform_name)])
+
+            else: 
+                raise ValueError('Unsupported clean type')
 
 def install_deps_platform(platform, items):
     for i in range(len(items)):
@@ -978,8 +1019,11 @@ def run_build_image_install(config, platform_name, install_dir):
                                  + [ tag_name ]
                                  + cmd))
 
+def get_install_path(config, platform):
+    return '/tmp/{}.install'.format(get_release_tag_name(config, platform))
+
 def create_install_dir(config, platform):
-    path = '/tmp/{}.install'.format(get_release_tag_name(config, platform))
+    path = get_install_path(config, platform)
     cmd = ['mkdir', '-p', path]
 
     if is_cluster_mode(config):
@@ -995,6 +1039,8 @@ def create_install_dir(config, platform):
 
 def remove_install_dir(config, path):
     assert path.startswith('/tmp/') and path.endswith('.install'), "Must only delete valid install path"
+    if not os.path.isdir(path):
+        return
     cmd = ['rmdir', path]
 
     if is_cluster_mode(config):
@@ -1011,14 +1057,17 @@ def remove_install_dir(config, path):
 def clean_install_files(config, platform_name, install_dir):
     # We have to delete the installs files in a container
     # because the cppdock user wont have to permissions
+    if not os.path.isdir(install_dir):
+        return
     base_image = "ubuntu:bionic" # TODO use config or something
     assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
-    cmd = ['rm', '-rf', '/opt/install/*']
+    cmd = ['/bin/bash', '-s', 'rm', '-rf', '/opt/install/*']
     mount_install = get_run_options_mount_install(config, platform_name, install_dir)
-    subprocess.call(remove_none(['docker', 'run', '--rm']
-                                 + mount_install
-                                 + [ base_image ]
-                                 + cmd))
+    cmd = remove_none(['docker', 'run', '--rm']
+                      + mount_install
+                      + [ base_image ]
+                      + cmd)
+    subprocess.check_output(cmd, stderr=subprocess.PIPE)
 
 def run_stack_deploy(config, stack_name):
     # docker stack deploy is already idempotent
@@ -1133,8 +1182,9 @@ def default_compose_file_service(config, platform_name):
         }
     }
 
-def get_volume_name(config, platform_name):
-    build_type = get_build_type(config, platform_name).lower()
+def get_volume_name(config, platform_name, build_type = None):
+    if build_type == None:
+        build_type = get_build_type(config, platform_name).lower()
     return get_image_tag_name(config, platform_name, build_type)
 
 def get_build_tag_name(config, platform_name):
@@ -1179,6 +1229,7 @@ def get_dev_service_init(config, platform_name):
         return None
 
 def run_dev_service_cmake(build_type, target = None, init_only = ''):
+    p = None
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
         p = subprocess.Popen(['cmake',
                               '-DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake',
@@ -1186,13 +1237,9 @@ def run_dev_service_cmake(build_type, target = None, init_only = ''):
                               '-DCMAKE_BUILD_TYPE=' + build_type,
                               '/opt/src'],
                              cwd = '/opt/build')
-    else:
-        p = subprocess.Popen(['cmake', '-DCMAKE_BUILD_TYPE=' + build_type,
-                              '.'],
-                             cwd = '/opt/build')
-    p.communicate('')
+        p.communicate('')
 
-    if p.returncode == 0 and target and not init_only:
+    if (p == None or p.returncode == 0) and target and not init_only:
         p = subprocess.Popen(['cmake', '--build', '.', '--target', target],
                              cwd = '/opt/build')
         p.communicate('')
