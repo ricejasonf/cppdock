@@ -334,7 +334,7 @@ def make_release_image(config, platform_name, context_dir):
         make_docker_image_remote(machine_name, release_tag_name, dockerfile,
                                  context_dir) 
     else:
-        make_docker_image(release_tag_name, dockerfile, print_only)
+        make_docker_image(release_tag_name, dockerfile, print_only, context_dir)
     return release_tag_name
 
 def make_release_dockerfile(config, platform_name, build_image):
@@ -841,12 +841,11 @@ def get_config_option(config, name):
         raise ValueError('Config option has no default for "{0}"'.format(name))
     return value
 
-def make_docker_image(tag_name, dockerfile_data, print_only = False):
+def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
     if print_only:
         print '###### Docker Image: ' + tag_name + ' ######'
         print dockerfile_data
         return
-    context_dir = '.'
     p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name,
                           '--file=-', context_dir], stdin=subprocess.PIPE)
     out, err = p.communicate(dockerfile_data)
