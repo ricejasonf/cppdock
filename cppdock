@@ -496,6 +496,7 @@ def command_install_src(args):
 
 def command_init_dev_service(args):
     # command run in container so config is not allowed
+    check_sysroot()
     p = run_dev_service_target(args.build_type, args.target,
                                args.shell_only, args.shell,
                                args.keep_alive)
@@ -771,6 +772,10 @@ def get_base_image_dockerfile_data(config, platform_name):
 FROM {tag_name}
     # installs cppdock in base image
     COPY --from={cppdock_tag_name} /opt/install/ /usr/local
+    COPY --from={cppdock_tag_name} /root/.cppdock_recipes/ /root/.cppdock_recipes
+    RUN mkdir -p /opt/install && \
+        mkdir -p /opt/build && \
+        touch /opt/toolchain.cmake
     """.format(tag_name = tag_name,
                cppdock_tag_name = cppdock_tag_name)
 
@@ -792,27 +797,31 @@ def make_base_image_dockerfile(config, platform_name, print_only):
         make_docker_image(tag_name, dockerfile_data, print_only)
 
 def find_recipe(platform, repo):
+    # make a flat list of recipe file paths
+    # to search linearly
+    base_paths = ['/opt/cppdock_recipes',
+                  '/opt/sysroot/cppdock_recipes',
+                  '/root/.cppdock_recipes']
+
     repo = repo.replace('/', '-')
-    local_recipe_path = '/opt/cppdock_recipes'
     repo_with_platform = repo + '-' + platform
-    builtin_recipe_path = os.path.expanduser('~') + '/.cppdock_recipes'
-    xs = [
-        local_recipe_path   + '/' + repo_with_platform,
-        local_recipe_path   + '/' + repo,
-        local_recipe_path   + '/default',
-        builtin_recipe_path + '/' + repo_with_platform,
-        builtin_recipe_path + '/' + repo,
-        builtin_recipe_path + '/default',
-    ]
+    file_names = [repo_with_platform, repo, 'default']
+
+    product = itertools.product(base_paths, file_names)
+    xs = [os.path.join(a, b) for (a, b) in product]
     for x in xs:
-        print "Trying Recipe Location: {0}".format(x)
+        if is_verbose_mode():
+            print "Trying Recipe Location: {0}".format(x)
         if os.path.isfile(x):
             return x
     raise ValueError('Unable to find cppdock recipe: ' + repo_with_platform)
 
 def check_sysroot():
+    # This should only be called inside a build container
     if not os.path.isdir('/opt/sysroot/'):
-        raise ValueError('Sysroot directory is missing: /opt/sysroot/')
+        # implicitly create /opt/sysroot if none exists
+        os.symlink('/usr/local', '/opt/sysroot')
+        assert os.path.isdir('/opt/sysroot/')
 
 def get_arg(args, i):
     next(iter(args[i:i+1]), None)
@@ -1966,6 +1975,8 @@ def get_build_source_path(config):
 def is_allowed_cluster_sync(config):
     return config['source']['allow_sync']
 
+def is_verbose_mode():
+    return True;
 
 
 dispatch(os.sys.argv[1:2], os.sys.argv[2:])
