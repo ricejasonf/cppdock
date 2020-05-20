@@ -775,7 +775,8 @@ FROM {tag_name}
     COPY --from={cppdock_tag_name} /root/.cppdock_recipes/ /root/.cppdock_recipes
     RUN mkdir -p /opt/install && \
         mkdir -p /opt/build && \
-        touch /opt/toolchain.cmake
+        touch /opt/toolchain.cmake && \
+        if [ ! -d /opt/sysroot ]; then ln -s /usr/local /opt/sysroot; fi
     """.format(tag_name = tag_name,
                cppdock_tag_name = cppdock_tag_name)
 
@@ -1369,7 +1370,7 @@ def cluster_sync_source_init(config):
         with open(source_init, 'r') as fh:
             script_data += fh.read()
     elif source_repo:
-        source_repo_tag = config['cppdock'].get('tag', 'master')
+        source_repo_tag = config['source'].get('tag', 'master')
         script_data = "git clone --depth 1 --branch {tag} --single-branch {repo} .".format(
                 repo = source_repo,
                 tag  = source_repo_tag)

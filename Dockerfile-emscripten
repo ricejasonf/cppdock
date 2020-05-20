@@ -1,4 +1,5 @@
-ARG EMSCRIPTEN_TAG=1.38.25
+# TODO finish changing this
+ARG EMSCRIPTEN_TAG=1.39.14
 FROM ricejasonf/emscripten:$EMSCRIPTEN_TAG
   COPY cppdock /usr/local/bin
   COPY recipes/ /root/.cppdock_recipes
