@@ -8,3 +8,4 @@ FROM ubuntu:eoan
 
   COPY toolchain/linux_x64.cmake /opt/toolchain.cmake
   COPY --from=ricejasonf/heavy_compiler /opt/install/ /usr/local
+  RUN ldconfig
