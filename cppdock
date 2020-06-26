@@ -821,7 +821,11 @@ def find_recipe(platform, repo):
 
     repo = repo.replace('/', '-')
     repo_with_platform = repo + '-' + platform
-    file_names = [repo_with_platform, repo, 'default']
+    default_with_platform = 'default' + '-' + platform
+    file_names = [repo_with_platform,
+                  repo,
+                  default_with_platform,
+                  'default']
 
     product = itertools.product(base_paths, file_names)
     xs = [os.path.join(a, b) for (a, b) in product]
@@ -1290,9 +1294,14 @@ def get_dev_service_init(config, platform_name):
         return None
 
 def run_dev_service_cmake(build_type, target = None, init_only = ''):
+    cmake_commands = ['cmake']
+    emscripten_root = os.getenv('EMSCRIPTEN_ROOT')
+    if emscripten_root:
+        emcmake = os.path.join(emscripten_root, 'emcmake')
+        cmake_commands = [emcmake, 'cmake']
     p = None
     if not os.path.isfile('/opt/build/CMakeCache.txt'):
-        p = subprocess.Popen(['cmake',
+        p = subprocess.Popen(cmake_commands + [
                               '-DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake',
                               '-DCMAKE_INSTALL_PREFIX=/opt/install',
                               '-DCMAKE_BUILD_TYPE=' + build_type,

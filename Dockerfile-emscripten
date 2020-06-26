@@ -1,8 +1,13 @@
-# TODO finish changing this
-ARG EMSCRIPTEN_TAG=1.39.14
+ARG EMSCRIPTEN_TAG=1.39.5
 FROM ricejasonf/emscripten:$EMSCRIPTEN_TAG
+  RUN apt-get update && apt-get -yq install \
+    cmake python bash-completion vim \
+    && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
+    && echo 'set hlsearch' >> /root/.vimrc
+  COPY --from=ricejasonf/heavy_compiler /opt/install/ /usr/local
   COPY cppdock /usr/local/bin
   COPY recipes/ /root/.cppdock_recipes
   COPY toolchain/emscripten.cmake /opt/toolchain.cmake
 
-  RUN ln -s /usr/local/src/emscripten/system /opt/sysroot && mkdir /opt/install
+  ENV EMSCRIPTEN_ROOT=/usr/local/emscripten
+  RUN ln -s /usr/local/emscripten/system /opt/sysroot
