@@ -1,8 +1,8 @@
-FROM ubuntu:eoan
+FROM ubuntu:22.04
 
 RUN  apt-get update \
   && apt-get -yq install \
-      python cmake git autoconf bash-completion vim wget \
+      python-is-python3 cmake git autoconf bash-completion vim wget \
   && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
   && echo 'set hlsearch' >> /root/.vimrc
 

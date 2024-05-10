@@ -4,7 +4,7 @@ from collections import OrderedDict
 from collections import namedtuple
 from uuid import getnode as get_mac
 import argparse
-import distutils.dir_util
+import shutil
 import glob
 import itertools
 import json
@@ -14,7 +14,7 @@ import string
 import subprocess
 import sys
 import time
-import urllib2
+from urllib.request import urlopen
 import warnings
 import zipfile
 
@@ -285,12 +285,12 @@ def command_complete(args_str):
             candidates = get_all_platforms(config)
 
     candidates = filter(lambda x: x.startswith(completion), candidates)
-    print ' '.join(candidates)
+    print(' '.join(candidates))
 
 def command_init(args):
     config = load_config_file_with_args(args)
     if args.print_config:
-        print json.dumps(config, indent=2, separators=(',', ': '))
+        print(json.dumps(config, indent=2, separators=(',', ': ')))
 
 def command_build(args):
     config = load_config_file_with_args(args)
@@ -418,15 +418,15 @@ def command_dev_cluster(args):
             dev_cluster_clean_containers(config)
             dev_cluster_clean_volumes(config)
     elif (args.print_only):
-        print get_dev_compose_file(config)
+        print(get_dev_compose_file(config))
     else:
         # make the build images
         [make_build_image(config, p) for p in get_all_platforms(config)]
 
         if is_cluster_mode(config):
-            print "Running in CLUSTER mode..."
+            print("Running in CLUSTER mode...")
         else:
-            print "Running in LOCAL mode..."
+            print("Running in LOCAL mode...")
 
         # tags, and pushes the dev images which should be to the dev_registry
         for platform_name in get_all_platforms(config):
@@ -443,7 +443,7 @@ def command_dev_cluster(args):
         stack_name  = get_stack_name(config)
         run_stack_deploy(config, stack_name)
 
-        print "Finished deploying {stack_name}\n".format(stack_name = stack_name)
+        print("Finished deploying {stack_name}\n".format(stack_name = stack_name))
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
 
 def command_dev_registry(args):
@@ -462,7 +462,7 @@ def command_install_dep(args):
     # be rebuilt for every config change
     check_sysroot()
     url = make_archive_url(args.repo, args.branch)
-    input = urllib2.urlopen(url)
+    input = urlopen(url)
     output = open('dep.zip', 'wr')
     buf = ''
     while True:
@@ -482,15 +482,15 @@ def command_install_dep(args):
     p = subprocess.Popen([recipe], cwd = cwd_dir)
     p.communicate('')
     if p.returncode != 0:
-        print """
+        print("""
 
     FAILURE: Recipe returned error code {0}.
-        """.format(p.returncode)
+        """.format(p.returncode))
         sys.exit(1)
 
 def command_install_src(args):
     url = make_archive_url(args.repo, args.branch)
-    input = urllib2.urlopen(url)
+    input = urlopen(url)
     output = open('dep.zip', 'wr')
     buf = ''
     while True:
@@ -507,8 +507,8 @@ def command_install_src(args):
     zipfile.ZipFile('dep.zip', 'r').extractall()
     base_src_dir = [x for x in os.listdir('.') if x.endswith(args.branch)][0]
     src_dir = os.path.join(base_src_dir, args.src_dir);
-    distutils.dir_util.copy_tree(src_dir, args.dest_dir)
-    distutils.dir_util.remove_tree(base_src_dir);
+    shutil.copytree(src_dir, args.dest_dir)
+    shutil.rmtree(base_src_dir);
 
 def command_init_dev_service(args):
     # command run in container so config is not allowed
@@ -613,7 +613,7 @@ def load_config_file_json(json_file_path):
 
     if not os.path.isfile(json_file_path):
         raise ValueError('Config file not found: ' + json_file_path)
-    stream = file(json_file_path, 'r')
+    stream = open(json_file_path, 'r')
     config = json.load(stream, object_pairs_hook=OrderedDict)
 
     # validate
@@ -635,7 +635,7 @@ def normalize_config_paths(config):
 
 def write_config_file(config, json_file_path):
     try:
-        with open(json_file_path, 'wb') as fh:
+        with open(json_file_path, 'w') as fh:
             json.dump(config, fh, indent=2, separators=(',', ': '))
             fh.write('\n')
     except:
@@ -831,7 +831,7 @@ def find_recipe(platform, repo):
     xs = [os.path.join(a, b) for (a, b) in product]
     for x in xs:
         if is_verbose_mode():
-            print "Trying Recipe Location: {0}".format(x)
+            print("Trying Recipe Location: {0}".format(x))
         if os.path.isfile(x):
             return x
     raise ValueError('Unable to find cppdock recipe: ' + repo_with_platform)
@@ -863,38 +863,39 @@ def get_config_option(config, name):
 
 def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
     if print_only:
-        print '###### Docker Image: ' + tag_name + ' ######'
-        print dockerfile_data
+        print('###### Docker Image: ' + tag_name + ' ######')
+        print(dockerfile_data)
         return
-    p = subprocess.Popen(['docker', 'build', '--tag=' + tag_name,
+    p = subprocess.Popen(['docker', 'buildx', 'build', '--tag=' + tag_name,
                           '--file=-', context_dir], stdin=subprocess.PIPE)
-    out, err = p.communicate(dockerfile_data)
+    out, err = p.communicate(bytes(dockerfile_data, 'utf-8'))
     if p.returncode == 0:
-        print "Finished building {0}.".format(tag_name)
+        print("Finished building {0}.".format(tag_name))
     else:
-        print """
+        print("""
 
     FAILURE: Build of {0} FAILED.
 
-        """.format(tag_name)
+        """.format(tag_name))
         sys.exit(1)
 
     return (p.returncode, out, err)
 
 def make_docker_image_remote(machine_name, tag_name, dockerfile_data, context_dir):
     # runs docker build on specifed machine
-    cmd = ['docker', 'build', '--tag=' + tag_name, '--file=-', context_dir]
+    cmd = ['docker', 'buildx', 'build', '--tag=' + tag_name, '--file=-',
+           context_dir]
     cmd = ['docker-machine', 'ssh', machine_name, 'sudo'] + cmd
     p = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-    out, err = p.communicate(dockerfile_data)
+    out, err = p.communicate(bytes(dockerfile_data, 'utf-8'))
     if p.returncode == 0:
-        print "Finished building {0}.".format(tag_name)
+        print("Finished building {0}.".format(tag_name))
     else:
-        print """
+        print("""
 
     FAILURE: Build of {0} FAILED.
 
-        """.format(tag_name)
+        """.format(tag_name))
         sys.exit(1)
 
     return (p.returncode, out, err)
@@ -903,10 +904,10 @@ def push_docker_image(config, tag_name):
     # tags with registry and pushes
     registry = get_registry(config)
     rtag_name = registry + '/' + tag_name
-    print "Pushing {}".format(rtag_name)
+    print("Pushing {}".format(rtag_name))
     subprocess.check_output(['docker', 'tag', tag_name, rtag_name])
     subprocess.check_output(['docker', 'push', rtag_name])
-    print "Finished pushing {0}".format(rtag_name)
+    print("Finished pushing {0}".format(rtag_name))
     return rtag_name
 
 def get_platform_type(config, platform_name):
@@ -947,7 +948,7 @@ def make_deps_dockerfile(config, platform_name):
                 dev_service_init)
 
     for dep in deps:
-        deps_stages += string.join([make_deps_stage(base_image, platform_name, dep)])
+        deps_stages += " ".join([make_deps_stage(base_image, platform_name, dep)])
         deps_imports += make_deps_import(platform_name, dep[-1][2])
 
     return """
@@ -973,10 +974,10 @@ def make_deps_stage(base_image, platform_name, deps):
 
     docker_image_digest = get_stage_docker_image_digest(deps)
     if docker_image_digest is not None:
-    	build_image  = docker_image_digest
-        install_deps = ''
+      build_image  = docker_image_digest
+      install_deps = ''
     else:
-        install_deps = string.join([make_install_dep(x, y, z, zz) for x, y, z, zz in deps])
+      install_deps = " ".join([make_install_dep(x, y, z, zz) for x, y, z, zz in deps])
 
     revision = deps[-1][2].replace('/', '_')
 
@@ -1138,19 +1139,19 @@ def run_stack_deploy(config, stack_name):
     # docker stack deploy is already idempotent
     compose_file_data = get_dev_compose_file(config)
     p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
-    p.communicate(input=compose_file_data)
+    p.communicate(input=bytes(compose_file_data, 'utf-8'))
     if p.returncode != 0:
-        print """
+        print("""
 
     FAILURE: `docker stack deploy` for `{stack_name}` error code {error_code}.
-        """.format(stack_name=stack_name, error_code=p.returncode)
+        """.format(stack_name=stack_name, error_code=p.returncode))
         sys.exit(1)
 
 def run_stack_service_terminal(config, stack_name, platform_name):
     service_name = get_service_name(config, platform_name)
-    print """
+    print("""
     TODO shell into {service_name} somehow
-    """
+    """)
     # container_id = # get_container_id(config, platform_name)
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
@@ -1351,7 +1352,7 @@ def run_dev_service_target(build_type, target,
     # Things will show up in the logs and the user can still shell in to inspect things
 
     if p and p.returncode != 0:
-        print "Service exited with error {}.".format(p.returncode)
+        print("Service exited with error {}.".format(p.returncode))
 
     # hang out so the container stays alive
 
@@ -1374,7 +1375,7 @@ def cluster_get_sync_path(path):
 
 def cluster_sync_source(config):
     if not is_allowed_cluster_sync(config):
-        print 'Skipping source code sync'
+        print('Skipping source code sync')
         return
     machines = get_machine_list(config)
     machine_names = [x[0] for x in machines]
@@ -1406,11 +1407,11 @@ def cluster_sync_source_init(config):
 
 def cluster_sync_source_init_node(config, name, script_data):
     path = get_build_source_path(config)
-    print 'Initializing source code on {}'.format(name)
+    print('Initializing source code on {}'.format(name))
     p = subprocess.Popen(['docker-machine', 'ssh', name, 'bash', '-s'],
                          stdin = subprocess.PIPE)
     script_header = 'mkdir -p {path} && cd {path};'
-    p.communicate(script_header.format(path = path) + script_data)
+    p.communicate(bytes(script_header.format(path = path) + script_data, 'utf-8'))
     if p.returncode != 0:
         raise RuntimeError(
             'Failed to initialize source code on {name}'.format(
@@ -1440,8 +1441,8 @@ def get_nginx_proxy_conf(config, platform_name):
         redirect_servers += """
     server {{
         # redirect to https
-	server_name {domain} {non_www_domain};
-	return 301 https://{domain}$request_uri;
+  server_name {domain} {non_www_domain};
+  return 301 https://{domain}$request_uri;
     }}
     server {{
         # redirect to www.
@@ -1449,15 +1450,15 @@ def get_nginx_proxy_conf(config, platform_name):
         server_name {non_www_domain};
         ssl_certificate /run/secrets/{domain}.crt;
         ssl_certificate_key /run/secrets/{domain}.key;
-	return 301 https://{domain}$request_uri;
+  return 301 https://{domain}$request_uri;
     }}""".format(domain         = domain,
                  non_www_domain = non_www_domain)
     else:
         redirect_servers += """
     server {{
         # redirect to https
-	server_name {domain};
-	return 301 https://{domain}$request_uri;
+  server_name {domain};
+  return 301 https://{domain}$request_uri;
     }}""".format(domain = domain)
 
     for platform_name in get_all_platforms(config):
@@ -1486,8 +1487,8 @@ http {{
     resolver 127.0.0.11;
 
     log_format  main  \\'$remote_addr - $remote_user [$time_local] "$request" \\'
-		      \\'$status $body_bytes_sent "$http_referer" \\'
-		      \\'"$http_user_agent" "$http_x_forwarded_for"\\';
+          \\'$status $body_bytes_sent "$http_referer" \\'
+          \\'"$http_user_agent" "$http_x_forwarded_for"\\';
 
     access_log  /var/log/nginx/access.log  main;
 
@@ -1582,14 +1583,14 @@ def get_platform_port_specs(config, platform_name):
         port_data    = port_spec.split(':')
         length       = len(port_data)
 
-        if length is 1:
+        if length == 1:
             [port] = port_data
             port_name = ''
             protocol = 'ws'
-        elif length is 2:
+        elif length == 2:
             [port_name, port] = port_data
             protocol = 'ws'
-        elif length is 3:
+        elif length == 3:
             port_name, protocol, port = port_data
         else:
             raise ValueError("Invalid port specification")
@@ -1689,22 +1690,22 @@ def get_service_name(config, platform_name):
 def generate_self_signed_ssl_certificate(domain):
     subj = '/C=US/ST=Nevada/L=Henderson/O=Dis/CN={}'.format(domain)
     try:
-	key_data = subprocess.check_output(['openssl', 'genrsa', '4096'])
+      key_data = subprocess.check_output(['openssl', 'genrsa', '4096'])
     except:
-	raise RuntimeError('Failed to generate SSL key (via openssl)')
+      raise RuntimeError('Failed to generate SSL key (via openssl)')
 
     # Not sure about this if we need it to ever be secure
-    print "Creating self signed certificate..."
+    print("Creating self signed certificate...")
     p = subprocess.Popen([
         'openssl', 'req',
             '-new', '-x509', '-key', '/dev/stdin',
             '-subj', subj],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE)
-    crt_data, crt_err = p.communicate(key_data)
+    crt_data, crt_err = p.communicate(bytes(key_data, 'utf-8'))
 
     if p.returncode != 0:
-	raise RuntimeError('Failed to generate SSL cert (via openssl)')
+      raise RuntimeError('Failed to generate SSL cert (via openssl)')
 
     return (domain, key_data, crt_data)
 
@@ -1712,13 +1713,13 @@ def import_ssl_certificate(domain, key_data, crt_data):
     # Add to ./cppdock_secrets/
     key_name = '{}.key'.format(domain)
     crt_name = '{}.crt'.format(domain)
-    print 'Adding certificates to secret database...'
+    print('Adding certificates to secret database...')
     make_secret_file(key_name, key_data)
     make_secret_file(crt_name, crt_data)
 
 def make_secret_file(name, data):
     path = os.path.join(os.getcwd(), 'cppdock_secrets', name)
-    with open(path, 'wb') as fh:
+    with open(path, 'w') as fh:
         fh.write(data)
 
 def get_secret_files():
@@ -1847,7 +1848,7 @@ def set_machine(name, values):
     x = machine_env(name, values)
     env = os.environ
 
-    print "Setting docker host to machine: " + name
+    print("Setting docker host to machine: " + name)
     def set_env(name):
         value = x.get(name)
         if value:
@@ -1859,14 +1860,15 @@ def set_machine(name, values):
     set_env('DOCKER_TLS_VERIFY')
     set_env('DOCKER_CERT_PATH')
     set_env('DOCKER_MACHINE_NAME')
-    print 'Using docker host: ' + env['DOCKER_HOST']
+    print('Using docker host: ' + env['DOCKER_HOST'])
 
 def machine_env(name, values):
     if values.get('env'):
         return values['env']
     else:
         raw = subprocess.check_output(['docker-machine', 'env', name])
-        return dict(re.findall('export ([A-Z_]+)="([^"]+)"', raw))
+          
+    return dict(re.findall('export ([A-Z_]+)="([^"]+)"', raw))
 
 def machine_start_all(config):
     name_list = list(get_machine_names(config))
@@ -1934,7 +1936,7 @@ def machine_rsync(name, src_path, dest_path):
             user        = driver['SSHUser'],
             ip_address  = ip_address,
             dest_path   = dest_path)
-    print 'Syncing source code to ' + node_path
+    print('Syncing source code to ' + node_path)
     ssh_command = ' '.join([
         'ssh -i {}'.format(ssh_key_path),
             '-o StrictHostKeyChecking=no',
