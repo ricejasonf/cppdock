@@ -1,11 +1,6 @@
-FROM ubuntu:22.04
-
-  RUN apt-get update && apt-get -yq install \
-    cmake python-is-python3 bash-completion vim \
-    && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
-    && echo 'set hlsearch' >> /root/.vimrc \
-    && ln -s /usr/local /opt/sysroot
-
+FROM ricejasonf/cppdock:latest
+  COPY --from=ricejasonf/llvm-project-heavy /opt/install/ /opt/sysroot
+  ENV LD_LIBRARY_PATH = "${LD_LIBRARY_PATH}:/opt/sysroot/lib/x86_64-unknown-linux-gnu"
+  # TODO use -frtlib-add-rpath
   COPY toolchain/linux_x64.cmake /opt/toolchain.cmake
-  COPY --from=ricejasonf/llvm-project-heavy /opt/install/ /usr/local
   RUN ldconfig

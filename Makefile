@@ -1,4 +1,4 @@
-.PHONY: platforms cppdock platform_linux_x64 platform_emscripten platform_tvossimulator
+.PHONY: platforms cppdock platform_linux_x64 platform_emscripten boost platform_tvossimulator
 
 cppdock:
 	docker build --force-rm=true -t ricejasonf/cppdock .
@@ -29,8 +29,17 @@ temp:
 install:
 	cp ./cppdock /usr/local/bin/
 
-push: cppdock platforms
+push: cppdock platforms boost
 	docker push ricejasonf/cppdock && \
 	docker push ricejasonf/cppdock:linux_x64 && \
-	docker push ricejasonf/cppdock:emscripten
-	#docker push ricejasonf/cppdock:tvossimulator
+	docker push ricejasonf/cppdock:emscripten && \
+	docker push ricejasonf/boost:1_85_0 && \
+	docker push ricejasonf/boost_header_only:1_85_0
+
+# Prebuild dependencies.
+boost:
+	docker buildx build . -f ./recipes_docker/Dockerfile-boost --tag ricejasonf/boost:1_85_0 \
+		--target=boost && \
+	docker buildx build . -f ./recipes_docker/Dockerfile-boost --tag ricejasonf/boost_header_only:1_85_0 \
+		--target=boost_header_only
+

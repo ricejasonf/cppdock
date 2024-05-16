@@ -1,7 +1,7 @@
 #!/bin/bash
 
 mkdir -p build && cd build \
-&& /usr/local/emscripten/emcmake cmake \
+&& /opt/emsdk/upstream/emscripten/emcmake cmake \
     -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
     -DCMAKE_INSTALL_PREFIX=/opt/install \
     -DCMAKE_BUILD_TYPE=Release \

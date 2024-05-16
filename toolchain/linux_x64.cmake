@@ -6,7 +6,7 @@ set(CMAKE_CXX_COMPILER clang++)
 set(CMAKE_C_COMPILER_WORKS 1)
 set(CMAKE_CXX_COMPILER_WORKS 1)
 
-set(CMAKE_CXX_FLAGS "-stdlib=libc++" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS "-stdlib=libc++ --target=x86_64-unknown-linux-gnu" CACHE STRING "" FORCE)
 set(CMAKE_SYSTEM_INCLUDE_PATH "/opt/sysroot/include" CACHE STRING "" FORCE)
 list(APPEND CMAKE_FIND_ROOT_PATH "/opt/sysroot")
 include_directories("/opt/sysroot/include/c++/v1")

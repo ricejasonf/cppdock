@@ -463,7 +463,7 @@ def command_install_dep(args):
     check_sysroot()
     url = make_archive_url(args.repo, args.branch)
     input = urlopen(url)
-    output = open('dep.zip', 'wr')
+    output = open('dep.zip', 'wb')
     buf = ''
     while True:
         buf = input.read(800)
@@ -491,7 +491,7 @@ def command_install_dep(args):
 def command_install_src(args):
     url = make_archive_url(args.repo, args.branch)
     input = urlopen(url)
-    output = open('dep.zip', 'wr')
+    output = open('dep.zip', 'wb')
     buf = ''
     while True:
         buf = input.read(800)

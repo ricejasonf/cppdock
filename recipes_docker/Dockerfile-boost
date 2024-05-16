@@ -1,0 +1,17 @@
+FROM ubuntu:22.04 as build_image
+
+RUN apt-get update && apt-get -yq install \
+  build-essential libc6-dev libstdc++-12-dev cmake
+
+ADD https://boostorg.jfrog.io/artifactory/main/release/1.85.0/source/boost_1_85_0.tar.gz boost_1_85_0.tar.gz
+RUN tar -xvzf boost_1_85_0.tar.gz && \
+    cd ./boost_1_85_0 && ./bootstrap.sh && \
+    ./b2 install --prefix=/opt/install
+
+FROM ubuntu:22.04 as boost
+
+COPY --from=build_image /opt/install/ /opt/install
+
+FROM ubuntu:22.04 as boost_header_only
+
+COPY --from=build_image /opt/install/include/ /opt/install/include

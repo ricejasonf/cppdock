@@ -1,13 +1,17 @@
-ARG EMSCRIPTEN_TAG=1.39.5
-FROM ricejasonf/emscripten:$EMSCRIPTEN_TAG
-  RUN apt-get update && apt-get -yq install \
-    cmake python bash-completion vim \
-    && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
-    && echo 'set hlsearch' >> /root/.vimrc
-  COPY --from=ricejasonf/heavy_compiler /opt/install/ /usr/local
-  COPY cppdock /usr/local/bin
-  COPY recipes/ /root/.cppdock_recipes
-  COPY toolchain/emscripten.cmake /opt/toolchain.cmake
+FROM ricejasonf/cppdock as emsdk_unzip
+  ARG EMSCRIPTEN_TAG=3.1.59
+  ADD https://github.com/emscripten-core/emsdk/archive/$EMSCRIPTEN_TAG.tar.gz emsdk.tar.gz
+  RUN tar -xvzf emsdk.tar.gz && mv emsdk-$EMSCRIPTEN_TAG /opt/emsdk
+FROM ricejasonf/cppdock:linux_x64
+  ENV EMSCRIPTEN_TAG=3.1.59
+  COPY --from=emsdk_unzip /opt/emsdk/ /opt/emsdk
+  WORKDIR /opt/emsdk
+  RUN ./emsdk install $EMSCRIPTEN_TAG
+  RUN ./emsdk activate $EMSCRIPTEN_TAG
 
-  ENV EMSCRIPTEN_ROOT=/usr/local/emscripten
-  RUN ln -s /usr/local/emscripten/system /opt/sysroot
+  # Replace the symlink for sysroot
+  RUN ln -snf /opt/emsdk/upstream/emscripten/cache/sysroot/ /opt/sysroot
+
+  ENV EMSDK=/opt/emsdk \
+      PATH="/opt/emsdk:/opt/emsdk/upstream/emscripten:/opt/emsdk/node/16.20.0_64bit/bin:${PATH}"
+  COPY toolchain/emscripten.cmake /opt/toolchain.cmake

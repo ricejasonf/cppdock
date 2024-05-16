@@ -2,8 +2,8 @@ cmake_minimum_required(VERSION 3.7)
 
 # Borrows some stuff from emscripten's toolchain file but makes many assumptions
 
-set(CMAKE_INSTALL_PREFIX "/opt/sysroot")
-set(EMSCRIPTEN_ROOT_PATH "/usr/local/emscripten")
+set(CMAKE_INSTALL_PREFIX "/opt/install")
+set(EMSCRIPTEN_ROOT_PATH "/opt/emsdk/upstream/emscripten")
 set(CMAKE_SYSTEM_NAME Emscripten)
 set(CMAKE_SYSTEM_VERSION 1)
 set(CMAKE_CROSSCOMPILING TRUE)
@@ -43,7 +43,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 
-set(CMAKE_SYSTEM_INCLUDE_PATH "${EMSCRIPTEN_ROOT_PATH}/system/include")
+set(CMAKE_SYSTEM_INCLUDE_PATH "/opt/sysroot/include")
 SET(CMAKE_EXECUTABLE_SUFFIX ".js")
 
 SET(CMAKE_C_USE_RESPONSE_FILE_FOR_LIBRARIES 1)
