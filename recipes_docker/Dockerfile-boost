@@ -3,8 +3,11 @@ FROM ubuntu:22.04 as build_image
 RUN apt-get update && apt-get -yq install \
   build-essential libc6-dev libstdc++-12-dev cmake
 
-ADD https://boostorg.jfrog.io/artifactory/main/release/1.85.0/source/boost_1_85_0.tar.gz boost_1_85_0.tar.gz
-RUN tar -xvzf boost_1_85_0.tar.gz && \
+ADD https://archives.boost.io/release/1.85.0/source/boost_1_85_0.tar.gz boost_1_85_0.tar.gz
+# be0d91732d5b0cc6fbb275c7939974457e79b54d6f07ce2e3dfdd68bef883b0b
+RUN echo "be0d91732d5b0cc6fbb275c7939974457e79b54d6f07ce2e3dfdd68bef883b0b boost_1_85_0.tar.gz" \
+      | sha256sum --check --status && \
+    tar -xvzf boost_1_85_0.tar.gz && \
     cd ./boost_1_85_0 && ./bootstrap.sh && \
     ./b2 install --prefix=/opt/install
 

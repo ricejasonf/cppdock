@@ -634,9 +634,10 @@ def normalize_config_paths(config):
     return config
 
 def write_config_file(config, json_file_path):
+    json_str = json.dumps(config, indent=2, separators=(',', ': '))
     try:
         with open(json_file_path, 'w') as fh:
-            json.dump(config, fh, indent=2, separators=(',', ': '))
+            fh.write(json_str)
             fh.write('\n')
     except:
         warnings.warn('WARNING: Unable to write to json file')
@@ -732,8 +733,9 @@ def get_current_sha_with_comment(item):
             tag = normalize_branch_name(tag)
             lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
             for line in lines:
-                if line.endswith(tag):
-                    return line[0:40]
+                line_str = line.decode('utf-8')
+                if line_str.endswith(tag):
+                    return line_str[0:40]
             raise RuntimeError("Unable to get SHA from remote git repository")
 
 def normalize_repo_name(name):
