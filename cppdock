@@ -104,6 +104,9 @@ def parse_args_release(args):
     parser.add_argument('--push',       dest      = 'push',
                                         default   = None,
                                         help      = 'Tag name to push')
+    parser.add_argument('--tag',        dest      = 'tag',
+                                        default   = None,
+                                        help      = 'Tag without pushing')
     parser.add_argument('platform',     default   = None,
                                         nargs     = '?',
                                         help      = 'Name of target platform')
@@ -305,22 +308,24 @@ def command_release(args):
     config['__default_build_type'] = 'release'
     set_master_machine(config)
     print_only = False
-    push_tag_name = args.push
+    tag_name = args.push or args.tag
 
     platforms = [args.platform] if args.platform else get_all_platforms(config)
 
-    if push_tag_name and len(platforms) > 1:
+    if tag_name and len(platforms) > 1:
         raise StandardError(
-                "The `push` option is not allowed with multiple platforms")
+        "The `push` or `tag` option is not allowed with multiple platforms")
 
     for platform in platforms:
         make_build_image(config, platform, print_only)
         install_dir = create_install_dir(config, platform)
         run_build_image_install(config, platform, install_dir)
         make_release_image(config, platform, install_dir)
-        if push_tag_name:
-            push_release_image(config, platform, push_tag_name)
-
+        if tag_name:
+            image_name = get_release_tag_name(config, platform)
+            subprocess.check_output(['docker', 'tag', image_name, tag_name])
+        if tag_name and args.push:
+            subprocess.check_output(['docker', 'push', tag_name])
 
 def make_build_image(config, platform_name, print_only = False):
     if is_platform_service(config, platform_name):
@@ -357,11 +362,6 @@ FROM {base_image}
     COPY ./ /opt/install
     WORKDIR /opt/install
 """.format(base_image = base_image)
-
-def push_release_image(config, platform_name, tag_name):
-    image_name = get_release_tag_name(config, platform_name)
-    subprocess.check_output(['docker', 'tag', image_name, tag_name])
-    subprocess.check_output(['docker', 'push', tag_name])
 
 def make_service_image_fn(config, platform_name):
     service_type = get_service_type(config, platform_name)
