@@ -1,0 +1,30 @@
+#!/bin/bash
+
+set -e  # Exit on any error
+set -o pipefail  # Catch errors in piped commands
+set -x  # Debug output
+
+export CC=/usr/local/bin/clang++
+export CXX=/usr/local/bin/clang++
+#export LD_LIBRARY_PATH=/usr/local/lib
+
+git clone --depth=1 https://github.com/alandefreitas/matplotplusplus.git
+
+# Install only the required library dependencies
+sudo apt update
+sudo apt install -y \
+    liblapack-dev \
+    libjpeg-dev \
+    libtiff-dev \
+    libpng-dev \
+    zlib1g-dev \
+    libnodesoup-dev
+
+cmake -s /opt/src -B /opt/build \
+    -DMATPLOTPP_BUILD_EXAMPLES=OFF      \
+    -DMATPLOTPP_BUILD_SHARED_LIBS=ON    \
+    -DMATPLOTPP_BUILD_TESTS=OFF         \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+cmake --build
+cmake --install /opt/install

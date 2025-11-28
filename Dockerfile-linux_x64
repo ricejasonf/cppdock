@@ -1,6 +1,7 @@
 FROM ricejasonf/cppdock:latest
   COPY --from=ricejasonf/llvm-project-heavy /opt/install/ /opt/sysroot
-  ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}:/opt/sysroot/lib/x86_64-unknown-linux-gnu"
-  # TODO use -frtlib-add-rpath
   COPY toolchain/linux_x64.cmake /opt/toolchain.cmake
+  COPY cppdock /usr/local/bin/
+  COPY cppdock /opt/install/bin/
+  COPY recipes/ /root/.cppdock_recipes
   RUN ldconfig

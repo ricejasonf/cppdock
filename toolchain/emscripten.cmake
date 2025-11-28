@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.7)
 # Borrows some stuff from emscripten's toolchain file but makes many assumptions
 
 set(CMAKE_INSTALL_PREFIX "/opt/install")
-set(EMSCRIPTEN_ROOT_PATH "/opt/emsdk/upstream/emscripten")
+set(EMSCRIPTEN_ROOT_PATH "/opt/sysroot/emscripten")
 set(CMAKE_SYSTEM_NAME Emscripten)
 set(CMAKE_SYSTEM_VERSION 1)
 set(CMAKE_CROSSCOMPILING TRUE)

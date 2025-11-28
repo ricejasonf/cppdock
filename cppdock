@@ -984,7 +984,7 @@ def make_deps_stage(base_image, platform_name, deps):
     revision = deps[-1][2].replace('/', '_')
 
     return """
-FROM {0} as build_{2}_{1}
+FROM {0} AS build_{2}_{1}
     {4}
     WORKDIR /usr/local/src
     {3}
