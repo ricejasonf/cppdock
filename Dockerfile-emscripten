@@ -8,7 +8,7 @@ FROM base_image AS build_binaryen
   WORKDIR /opt/build
   RUN cmake -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
             -DBUILD_TESTS=OFF \
-            -DINSTALL_PREFIX=/opt/install \
+            -DCMAKE_INSTALL_PREFIX=/opt/install \
             /opt/src/binaryen && \
     make -j$(nproc) && make install
 
@@ -24,7 +24,11 @@ FROM base_image
   COPY cppdock /usr/local/bin/
   COPY recipes/ /root/.cppdock_recipes
   COPY toolchain/emscripten.cmake /opt/toolchain.cmake
-  COPY --from=build_binaryen /opt/install/ /opt/sysroot
-  COPY --from=build_emscripten /opt/install/ /opt/sysroot
-  WORKDIR /opt/sysroot/emscripten
-  RUN ./emcc --generate-config && ./emcc --check
+  COPY --from=build_binaryen /opt/install/ /usr/local
+  COPY --from=build_emscripten /opt/install/ /usr/local
+  WORKDIR /usr/local/emscripten
+  RUN ./emcc --generate-config && ./emcc --check && ./embuilder.py build MINIMAL
+  # Copy heavy-scheme libraries
+  COPY --from=base_image /opt/sysroot/include/heavy/*.sld ./cache/sysroot/include/heavy/
+  COPY --from=base_image /opt/sysroot/include/heavy/base/*.sld ./cache/sysroot/include/heavy/base/
+  RUN ln -snf /usr/local/emscripten/cache/sysroot/ /opt/sysroot

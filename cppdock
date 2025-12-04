@@ -24,6 +24,26 @@ default_dep_path = "https://github.com/"
 ServiceFn = namedtuple('ServiceFn', ['nginx_proxy', 'postgres'])
 noop = lambda *x: None
 
+DefaultRecipeFiles = ["/opt/cppdock/recipes/{name}",
+                      "/opt/cppdock/recipes/default"]
+
+DefaultBuildSpec = {"base_image": "ricejasonf/cppdock",
+                    "sysroot": "/opt/sysroot",
+                    "recipe_files": DefaultRecipeFiles,
+                    "toolchain_file": None,
+                    "extends": None,
+                    "build_dir": "/opt/build",
+                    "service_cmd", ['cmake', '--build', '/opt/build',
+                                    '--target', "check"]}
+
+DefaultDepSpec = {"id": None,
+                  "name": None,
+                  "source": "github",
+                  "tag": None,
+                  "revision": None,
+                  "recipe_file": None,
+                  "dest_dir": "/opt/sysroot"}
+
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
     return type(obj)(remove_none(x) for x in obj if x is not None)

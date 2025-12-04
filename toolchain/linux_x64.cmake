@@ -1,4 +1,4 @@
-set(CMAKE_INSTALL_PREFIX "/opt/sysroot")
+set(CMAKE_INSTALL_PREFIX "/opt/install")
 
 set(CMAKE_C_COMPILER clang)
 set(CMAKE_CXX_COMPILER clang++)
@@ -10,7 +10,8 @@ set(CMAKE_CXX_FLAGS "-stdlib=libc++ --target=x86_64-unknown-linux-gnu" CACHE STR
 set(CMAKE_SYSTEM_INCLUDE_PATH "/opt/sysroot/include" CACHE STRING "" FORCE)
 list(APPEND CMAKE_FIND_ROOT_PATH "/opt/sysroot")
 include_directories("/opt/sysroot/include/c++/v1")
-list(APPEND CMAKE_EXE_LINKER_FLAGS "-Wl,--rpath=/opt/sysroot/lib/x86_64-unknown-linux-gnu/")
+# Because /opt/sysroot changes in different environments use /usr/local directly for dynamic loading.
+list(APPEND CMAKE_EXE_LINKER_FLAGS "-Wl,--rpath=/usr/local/lib/x86_64-unknown-linux-gnu/")
 
 # Compiler Features
 set(CMAKE_C_COMPILE_FEATURES "c_std_90;c_function_prototypes;c_std_99;c_restrict;c_variadic_macros;c_std_11;c_static_assert")
