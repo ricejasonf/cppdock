@@ -24,25 +24,226 @@ default_dep_path = "https://github.com/"
 ServiceFn = namedtuple('ServiceFn', ['nginx_proxy', 'postgres'])
 noop = lambda *x: None
 
-DefaultRecipeFiles = ["/opt/cppdock/recipes/{name}",
+# File names to search for recipes for building.
+DefaultRecipeFiles = ["/opt/cppdock/recipes/{name_with_dashes}",
                       "/opt/cppdock/recipes/default"]
 
-DefaultBuildSpec = {"base_image": "ricejasonf/cppdock",
-                    "sysroot": "/opt/sysroot",
-                    "recipe_files": DefaultRecipeFiles,
-                    "toolchain_file": None,
-                    "extends": None,
-                    "build_dir": "/opt/build",
-                    "service_cmd", ['cmake', '--build', '/opt/build',
-                                    '--target', "check"]}
+type JsonDict = dict[str, Any]
 
-DefaultDepSpec = {"id": None,
-                  "name": None,
-                  "source": "github",
-                  "tag": None,
-                  "revision": None,
-                  "recipe_file": None,
-                  "dest_dir": "/opt/sysroot"}
+class SpecBase:
+    def __init__(self, obj: JsonDict = {}):
+        self.merge(self, obj)
+
+    def merge(self, obj: JsonDict):
+        self.orig_obj |= obj
+        for attr, value in obj.items():
+            if hasattr(self, attr):
+                setattr(self, attr, value)
+    orig_obj = {}
+
+class DepSpec(SpecBase):
+    @staticmethod
+    def create(platform: PlatformSpec, dep: JsonDict):
+        if 'type' not in dep and 'source' in dep:
+            warnings.warn('"source" property for dep is deprecated.'
+                          'use "type" instead'
+                          DeprecationWarning)
+            dep['type'] = dep['source']
+            del dep['source']
+        match dep['type']:
+            case "github": return GitHubDepSpec(platform, dep)
+            case "docker": return DockerHubDepSpec(platform, dep)
+            case "volume": return VolumeDepSpec(platform, dep)
+            case "mount": return MountDepSpec(platform, dep)
+            case {**rest}: return DepSpec.create(platform, {**rest})
+
+    def __init__(self, platform: PlatformSpec, obj: JsonDict):
+        platform_defaults = {
+            'toolchain_file': platform.toolchain_file,
+            'dest_dir': platform.dest_dir
+            }
+        obj = platform_defaults | obj
+        self.merge(obj)
+
+    # A PlatformSpec
+    platform = None
+    # A nice name that serves as a default for DepSpecs (e.g. repo_name)
+    name = None
+    # DepSpec object (May be constructed by string)
+    type = "github"
+    # Some properties such as "revision" or "volume_name" are
+    # propagated to DepSpec.
+    # Git tag or branch name (also propagated to DepSpec.)
+    tag = None
+    # Path of CMake toolchain file (if different from platform)
+    toolchain_file = None
+    # Force specific file for recipe.
+    # Local ./cppdock_recipes folder contents is copied to
+    # /opt/cppdock_recipes in the container.
+    recipe_file = None
+    # Location to copy from /opt/install
+    dest_dir = None
+
+
+class GitHubDepSpec(SourceBase):
+    def __init__(self, platform: PlatformSpec, obj: JsonDict):
+        super().__init__(platform, obj)
+        assert name is not None
+        assert revision is not None
+
+    # Github repo name
+    name = None
+    # Github tag or branch name
+    tag = None
+    # Revision lock value (SHA Digest)
+    revision = None
+
+class DockerDepSpec(SourceBase):
+    def __init__(self, platform: PlatformSpec, obj: JsonDict):
+        super().__init__(platform, obj)
+        assert name is not None
+        assert revision is not None
+
+    # Docker image name
+    name = None
+    # Additional image tag name
+    tag = "latest"
+    # Revision lock value (SHA256 Digest)
+    # An empty string is accepted for local images to
+    # be specified by "{name}:{tag}".
+    revision = None
+
+    def get_build_stage_spec():
+        if revision == "":
+            return '{0}:{1}'.format(name, tag)
+        else:
+            return '{0}@{1}'.format(name, revision)
+
+class VolumeDepSpec(SourceBase):
+    def __init__(self, platform: PlatformSpec, obj: JsonDict):
+        if 'volume_name' not in obj:
+            obj['volume_name'] = obj['name']
+        super().__init__(platform, obj)
+    # Docker local volume name
+    volume_name = None
+
+class MountDepSpec(SourceBase):
+    def __init__(self, platform: PlatformSpec, obj: JsonDict):
+        super().__init__(platform, obj)
+        self.mount_path = obj['mount_path']
+    # Local path to mount volume to
+    mount_path = None
+
+platform_defaults = {
+        'linux_x64': {
+            'base_image': 'ricejasonf/cppdock:linux_x64',
+            'toolchain_file': '/opt/cppdock/toolchains/linux_x64.cmake'
+        },
+        'emscripten': {
+            'base_image': 'ricejasonf/cppdock:emscripten',
+            'toolchain_file': '/opt/cppdock/toolchains/emscripten.cmake'
+        }
+    }
+
+class PlatformSpec(SpecBase):
+    def __init__(self, name: str, obj: JsonDict):
+        if type := obj.get('type')
+            if defaults := platform_defaults.get(type)
+                obj = defaults | obj
+        deps_list = obj['deps']
+        del obj['deps']
+        super().__init__(obj)
+        platform_name = name
+        assert(self.base_image_dockerfile is None or
+               self.base_image == base_image)
+        for deps_stage in deps_list:
+            cur_stage = []
+            for dep in deps_stage:
+                cur_stage.append(DepSpec.create(self, dep))
+            self.deps_stages.append(cur_stage)
+    # Specify type.
+    type = None
+    # Specify the name of the platform (via the key of the object.)
+    platform_name = None
+    # List of list of deps for stages
+    deps_stages = []
+    # Name of docker image to base off of; String | DepSpec
+    base_image = None
+    # Path to Dockerfile to create base image instead of using base_image
+    base_image_dockerfile = None
+    # Path to sysroot directory
+    sysroot = "/opt/sysroot"
+    # List of names to search for recipe file when building dependency.
+    recipe_files = DefaultRecipeFiles
+    # Path of CMake toolchain file
+    toolchain_file = "/opt/toolchain.cmake"
+    # Path of build directory in container
+    build_dir = "/opt/build"
+    # Command for container
+    service_cmd = ['cmake', '--build', '/opt/build'
+                   '--target', "check"]
+    # Location to copy from /opt/install
+    dest_dir = "/opt/sysroot"
+    # Name of docker tag to use when pushing release image.
+    push_tag = None
+
+class SourceSpec(SpecBase):
+    @staticmethod
+    def create(obj: JsonDict):
+        type = obj.get('type')
+        if type is None:
+            type = 'git' if ('repo' in obj) else 'mount'
+        match type:
+            case 'mount':
+                return MountSpecSourceSpec(obj)
+            case 'git':
+                return GitSourceSpec(obj)
+    path = None
+    allow_sync = False
+
+class MountSourceSpec(SourceSpec):
+    # Host machine path to mount volume to /opt/src
+    path = "."
+
+class GitSourceSpec(SourceSpec):
+    def __init__(self, obj: JsonDict):
+        self.__init__(obj)
+        self.allow_sync = (self.path is not None and
+                           self.allow_sync is None)
+    repo = None
+    tag = None
+    sync_dirs = None
+
+class Config(SpecBase):
+    def __init__(self, obj: JsonDict):
+        super().__init__(obj)
+        assert(self.name is not None)
+        for platform_name, platform_obj in obj['platforms'].items()
+            self.platforms[platform_name] = PlatformSpec(platform_name,
+                                                         platform_obj)
+        self.machine_list = get_machine_list(self.orig_obj)
+        self.project_name = obj['name']
+    # Specify build type (default_build_type depends on context)
+    default_build_type = 'debug'
+    build_type = None
+    # Make a nice name for the current project.
+    project_name = None
+    # Specify docker image for cppdock stuff. (not locked)
+    cppdock_image = "ricejasonf/cppdock"
+    # Define various platforms.
+    platforms = {}
+    # Define how to manage source code for the project
+    # mounting to /opt/src in the container
+    # (which is the current directory by default.)
+    source = MountSourceSpec()
+    # Define a domain (for certs and junk).
+    domain = None
+    # Support specifying remote machines to build on.
+    # TODO Make MachineSpec for elements of this.
+    machine_list = []
+    # Set docker compose secrets stuff.
+    # Do not actually put passwords here.
+    secrets = {}
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -325,7 +526,7 @@ def command_build(args):
 
 def command_release(args):
     config = load_config_file_with_args(args)
-    config['__default_build_type'] = 'release'
+    config.default_build_type = 'release'
     set_master_machine(config)
     print_only = False
     tag_name = args.push or args.tag
@@ -347,7 +548,7 @@ def command_release(args):
         if tag_name and args.push:
             subprocess.check_output(['docker', 'push', tag_name])
 
-def make_build_image(config, platform_name, print_only = False):
+def make_build_image(config: Config, platform_name, print_only = False):
     if is_platform_service(config, platform_name):
         fn = make_service_image_fn(config, platform_name)
         fn(config, platform_name, print_only)
@@ -358,7 +559,7 @@ def make_build_image(config, platform_name, print_only = False):
     tag_name = get_build_tag_name(config, platform_name)
     make_docker_image(tag_name, dockerfile, print_only)
 
-def make_release_image(config, platform_name, context_dir):
+def make_release_image(config: Config, platform_name, context_dir):
     if is_platform_service(config, platform_name):
         return
     print_only = False
@@ -383,13 +584,13 @@ FROM {base_image}
     WORKDIR /opt/install
 """.format(base_image = base_image)
 
-def make_service_image_fn(config, platform_name):
+def make_service_image_fn(config: Config, platform_name):
     service_type = get_service_type(config, platform_name)
     fn = ServiceFn(nginx_proxy  = make_nginx_proxy_image,
                    postgres     = noop)
     return getattr(fn, service_type)
 
-def get_service_image_tag_name(config, platform_name):
+def get_service_image_tag_name(config: Config, platform_name):
     # this gets the image name to push to registry
     # or None if not needed
     fn = make_service_image_fn(config, platform_name)
@@ -402,12 +603,12 @@ def command_gen_certs(args):
     if args.platform:
         domain = get_domain(config, args.platform)
     else:
-        domain = config['cppdock'].get('domain')
+        domain = config.domain
 
     assert domain != None, "Config file must specify domain name"
     import_ssl_certificate(*generate_self_signed_ssl_certificate(domain))
 
-def make_nginx_proxy_image(config, platform_name, print_only):
+def make_nginx_proxy_image(config: Config, platform_name, print_only):
     tag_name = get_image_tag_name(config, platform_name, 'service')
     conf_data = get_nginx_proxy_conf(config, platform_name)
     dockerfile = """
@@ -429,7 +630,7 @@ def command_dev(args):
                     args.shell_only, args.privileged, ports_arg)
 
 def command_dev_cluster(args):
-    config      = load_config_file_with_args(args)
+    config = load_config_file_with_args(args)
     set_master_machine(config)
 
     if (args.stop or args.clean):
@@ -604,28 +805,18 @@ def load_config_file_with_args(args):
     json_file_path = args.json_file_path
     return load_config_file(json_file_path)
 
-def load_config_file(json_file_path):
+def load_config_file(json_file_path: str) -> Config:
     config_paths = []
     config_paths.insert(0, json_file_path)
-    config = load_config_file_json(json_file_path)
+    config_obj = load_config_file_json(json_file_path)
 
-    config = lock_config_file_deps(config)
-    write_config_file(config, json_file_path)
+    config_obj = lock_config_file_deps(config_obj)
+    write_config_file(config_obj, json_file_path)
 
-    config = normalize_config_paths(config)
-    config = merge_base_config(config, config_paths)
-    config = process_config_replace_deps(config)
+    config_obj = normalize_config_paths(config_obj)
+    config_obj = merge_base_config(config_obj, config_paths)
 
-    source = config.get('source', {})
-    config['source'] = source
-    source['allow_sync'] = calculate_allow_sync(config)
-    source["path"] = calculate_source_path(config, config_paths)
-
-    cppdock = config['cppdock']
-    cppdock["cppdock_image"] = cppdock.get("cppdock_image",
-                                           "ricejasonf/cppdock")
-    config["machine_list"] = get_machine_list(config)
-    return config
+    return Config(config_obj)
 
 def load_config_file_json(json_file_path):
     if os.path.isdir(json_file_path):
@@ -634,27 +825,27 @@ def load_config_file_json(json_file_path):
     if not os.path.isfile(json_file_path):
         raise ValueError('Config file not found: ' + json_file_path)
     stream = open(json_file_path, 'r')
-    config = json.load(stream, object_pairs_hook=OrderedDict)
+    config_json = json.load(stream, object_pairs_hook=OrderedDict)
 
     # validate
-    assert "cppdock" in config,             "Config must have cppdock section"
-    assert "name" in config["cppdock"],     "Config must have 'name' in cppdock section"
+    assert "cppdock" in config_json,             "Config must have cppdock section"
+    assert "name" in config_json["cppdock"],     "Config must have 'name' in cppdock section"
 
-    return config
+    return config_json
 
-def normalize_config_paths(config):
+def normalize_config_paths(config_obj):
     # this should happen after writing revision locks
-    cppdock = config["cppdock"]
-    source = config.get("source")
+    cppdock = config_obj["cppdock"]
+    source = config_obj.get("source")
     if "base_config" in cppdock:
         cppdock["base_config"] = os.path.abspath(cppdock["base_config"])
     if source and "path" in source and source["path"] != None:
         source["path"] = os.path.abspath(source["path"])
 
-    return config
+    return config_obj
 
-def write_config_file(config, json_file_path):
-    json_str = json.dumps(config, indent=2, separators=(',', ': '))
+def write_config_file(config_obj, json_file_path):
+    json_str = json.dumps(config_obj, indent=2, separators=(',', ': '))
     try:
         with open(json_file_path, 'w') as fh:
             fh.write(json_str)
@@ -662,52 +853,47 @@ def write_config_file(config, json_file_path):
     except:
         warnings.warn('WARNING: Unable to write to json file')
 
-def merge_base_config(config, config_paths):
-    if "base_config" not in config["cppdock"]:
-        return config
-    base_config_path = os.path.abspath(config["cppdock"]["base_config"])
-    del config["cppdock"]["base_config"]
+# TODO Consider deprecating "base_config". Is it used anywhere?
+def merge_base_config(config_obj, config_paths):
+    if "base_config" not in config_obj["cppdock"]:
+        return config_obj
+    base_config_path = os.path.abspath(config_obj["cppdock"]["base_config"])
+    del config_obj["cppdock"]["base_config"]
     config_paths.insert(0, base_config_path)
     base_config = load_config_file_json(base_config_path)
 
     # merge cppdock section
     cppdock_section = {}
     cppdock_section.update(base_config["cppdock"])
-    cppdock_section.update(config["cppdock"])
-    config["cppdock"] = cppdock_section
+    cppdock_section.update(config_obj["cppdock"])
+    config_obj["cppdock"] = cppdock_section
 
-    # only include platforms specified in current config
+    # only include platforms specified in current config_obj
     platforms = {}
 
-    for platform_name in config.get("platforms", {}):
-        platforms[platform_name] = merge_platform_config(platform_name, base_config, config)
+    for platform_name in config_obj.get("platforms", {}):
+        platforms[platform_name] = merge_platform_config(platform_name, base_config, config_obj)
 
-    config["platforms"] = platforms
-    return config
+    config_obj["platforms"] = platforms
+    return config_obj
 
-def merge_platform_config(platform_name, base_config, config):
+def merge_platform_config(platform_name, base_config, config_obj):
     result = {}
-    platform = config["platforms"].get(platform_name, {})
+    platform = config_obj["platforms"].get(platform_name, {})
     base_platform = base_config.get("platforms", {}).get(platform_name, {})
 
     result.update(base_platform)
     result.update(platform)
-    if config.get('deps') or base_config.get('deps'):
+    if config_obj.get('deps') or base_config.get('deps'):
         result["deps"] = []
         result["deps"] += base_platform.get("deps", [])
         result["deps"] += platform.get("deps", [])
     return result
 
-def process_config_replace_deps(config):
-    # TODO read "replace_deps" to replace all deps with a
-    #      specified name or a dep with a specific id
-    #      not sure if this is desirable yet
-    return config
-
-def lock_config_file_deps(config):
-    if 'platforms' not in config:
-        return config
-    for platform, settings in config['platforms'].items():
+def lock_config_file_deps(config_obj):
+    if 'platforms' not in config_obj:
+        return config_obj
+    for platform, settings in config_obj['platforms'].items():
         check_base_image_conflict(settings)
 
         for stage in settings.get('deps', []):
@@ -716,7 +902,7 @@ def lock_config_file_deps(config):
             for item in stage:
                 item = lock_item_json(item)
 
-    return config
+    return config_obj
 
 def lock_item_json(item):
     current_sha = get_current_sha_with_comment(item)
@@ -776,35 +962,21 @@ def check_base_image_conflict(settings):
     if 'base_image' in settings and 'base_image_dockerfile' in settings:
         raise StandardError("Conflicting base image settings detected")
 
-def get_max_key_length(config):
-    length = 0
-    for section in config.sections():
-        for item in config.items(section):
-            len_ = len(item[0])
-            if (len_ > length):
-                length = len_
-    return length
-
 def make_archive_url(repo, branch):
     return 'https://github.com/{0}/archive/{1}.zip'.format(repo, branch)
 
-def get_base_image_dockerfile(config, platform_name):
-    return config['platforms'][platform_name].get('base_image_dockerfile')
+def get_base_image_dockerfile(config: Config, platform_name):
+    return config.platforms[platform_name].base_image_dockerfile
 
-def get_user_base_tag_name(config, platform_name):
-    if get_base_image_dockerfile(config, platform_name):
+def get_user_base_tag_name(config: Config, platform_name):
+    platform = config.platforms[platform_name]
+    if platform_base_image_docker_file
         return get_image_tag_name(config, platform_name, 'user_base')
+    return platform.base_image
 
-    tag_name =  config['platforms'][platform_name].get('base_image')
-    if tag_name:
-        return tag_name
-
-    platform_type = get_platform_type(config, platform_name)
-    return get_config_option(config, 'platform_' + platform_type)
-
-def get_base_image_dockerfile_data(config, platform_name):
+def get_base_image_dockerfile_data(config: Config, platform_name):
     tag_name = get_user_base_tag_name(config, platform_name)
-    cppdock_tag_name = config['cppdock']['cppdock_image']
+    cppdock_tag_name = config.cppdock_image
 
     return """
 FROM {tag_name}
@@ -817,13 +989,13 @@ FROM {tag_name}
     """.format(tag_name = tag_name,
                cppdock_tag_name = cppdock_tag_name)
 
-def make_base_image(config, platform_name, print_only):
+def make_base_image(config: Config, platform_name, print_only):
     make_base_image_dockerfile(config, platform_name, print_only)
     dockerfile = get_base_image_dockerfile_data(config, platform_name)
     tag_name = get_base_tag_name(config, platform_name)
     make_docker_image(tag_name, dockerfile, print_only)
 
-def make_base_image_dockerfile(config, platform_name, print_only):
+def make_base_image_dockerfile(config: Config, platform_name, print_only):
     base_image_dockerfile = get_base_image_dockerfile(config, platform_name)
 
     if base_image_dockerfile:
@@ -868,21 +1040,6 @@ def check_sysroot():
 def get_arg(args, i):
     next(iter(args[i:i+1]), None)
 
-def get_config_option(config, name):
-    defaults = {
-        'project': None,
-        'platform_linux_x64':     'ricejasonf/cppdock:linux_x64',
-        'platform_emscripten':    'ricejasonf/cppdock:emscripten',
-        'platform_tvossimulator': 'ricejasonf/cppdock:tvossimulator',
-    }
-    value = None
-
-    if name in defaults:
-        value = defaults[name]
-    if value == None:
-        raise ValueError('Config option has no default for "{0}"'.format(name))
-    return value
-
 def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
     if print_only:
         print('###### Docker Image: ' + tag_name + ' ######')
@@ -922,7 +1079,7 @@ def make_docker_image_remote(machine_name, tag_name, dockerfile_data, context_di
 
     return (p.returncode, out, err)
 
-def push_docker_image(config, tag_name):
+def push_docker_image(config: Config, tag_name):
     # tags with registry and pushes
     registry = get_registry(config)
     rtag_name = registry + '/' + tag_name
@@ -932,35 +1089,25 @@ def push_docker_image(config, tag_name):
     print("Finished pushing {0}".format(rtag_name))
     return rtag_name
 
-def get_platform_type(config, platform_name):
+def get_platform_type(config: Config, platform_name):
     try:
-        return config['platforms'][platform_name]['type']
+        return config.platforms[platform_name].type
     except:
         raise ValueError('Platform name `{0}` not found.'.format(platform_name))
 
-# is_platform_service(config, platform_name)
-# is_platform_service(platform_type)
-def is_platform_service(*argv):
-    if len(argv) == 1:
-        [platform_type] = argv
-    elif len(argv) == 2:
-        [config, platform_name] = argv
-        platform_type = get_platform_type(config, platform_name)
+def is_platform_service(config: Config, platform_name):
+    platform_type = config.platforms[platform_name].type
     return platform_type == 'service' or platform_type.startswith('service:')
-
-def get_project_name(config):
-    return config['cppdock']['name']
 
 def make_deps_dockerfile(config, platform_name):
     platform_type = get_platform_type(config, platform_name)
-    # move this to be used when building the base image
-    #base_image = get_base_image(config, platform_name) or get_config_option(config, 'platform_' + platform_type)
     base_image = get_base_tag_name(config, platform_name)
-    deps = get_deps_from_config(config, platform_name)
+    deps_stages_list = config.platforms[platform_name].deps_stages
     deps_stages = ''
     deps_imports = ''
 
     build_type = get_build_type(config, platform_name)
+    # FIXME use platform.service_cmd
     target = get_dev_service_target(config, platform_name)
 
     dev_service_init = get_dev_service_init(config, platform_name)
@@ -969,9 +1116,9 @@ def make_deps_dockerfile(config, platform_name):
         copy_dev_service_init = "COPY {} /opt/dev_service_init".format(
                 dev_service_init)
 
-    for dep in deps:
-        deps_stages += " ".join([make_deps_stage(base_image, platform_name, dep)])
-        deps_imports += make_deps_import(platform_name, dep[-1][2])
+    for deps in deps_stages_list:
+        deps_stages += " ".join([make_deps_stage(base_image, platform_name, deps)])
+        deps_imports += make_deps_import(platform_name, deps[-1]['revision'])
 
     return """
 {deps_stages}
@@ -999,9 +1146,12 @@ def make_deps_stage(base_image, platform_name, deps):
       build_image  = docker_image_digest
       install_deps = ''
     else:
-      install_deps = " ".join([make_install_dep(x, y, z, zz) for x, y, z, zz in deps])
+      install_deps = " ".join([make_install_dep(dep['platform_type'],
+                                                dep['revision'],
+                                                dep['name'],
+                                                dep['source']) for dep in deps])
 
-    revision = deps[-1][2].replace('/', '_')
+    revision = deps[-1]['revision'].replace('/', '_')
 
     return """
 FROM {0} AS build_{2}_{1}
@@ -1018,12 +1168,13 @@ def get_stage_docker_image_digest(stage_deps):
                 return '{0}@{1}'.format(repo, revision)
     return None
 
-
+# `repo` is the `dep['name']`.
 def make_install_dep(platform, revision, repo, source=''):
-    if source == 'docker':
-        return """
-    COPY --from={0}@{1} /opt/install /opt/sysroot
-    COPY --from={0}@{1} /opt/install /opt/install""".format(repo, revision)
+    dest_dir = platform["dest_dir"];
+    if source == "docker":
+        return f"""
+    COPY --from={repo}@{revision} /opt/install {dest_dir}
+    COPY --from={repo}@{revistion} /opt/install /opt/install"""
 
     if not is_sha(revision):
         return ''
@@ -1041,31 +1192,22 @@ def make_install_dep(platform, revision, repo, source=''):
 
 def make_deps_import(platform, revision):
     return """
-    COPY --from=build_{1}_{0} /opt/install/ /opt/sysroot""".format(platform, revision.replace('/', '_'))
+    COPY --from=build_{1}_{0} /opt/install/ {2}""".format(
+            platform, revision.replace('/', '_'), dest_dir)
 
-def get_deps_from_config(config, platform_name):
-    platform = config['platforms'][platform_name]
-
-    return [get_deps_stage_items(stage, platform['type']) \
-        for stage in platform.get('deps', [])]
-
-    raise ValueError('Platform is not specified in cppdock json file')
-
-def get_deps_stage_items(deps_stage, platform_type):
-    return [(platform_type, item['revision'],  item['name'], item.get('source')) for item in deps_stage]
-
-def get_run_options_mount_source(config):
+def get_run_options_mount_source(config: Config):
     src_path = get_build_source_path(config)
     return ['--mount', 'type=bind,source=' + src_path + ',target=/opt/src,readonly']
 
-def get_run_options_mount_build(config, platform_name):
+def get_run_options_mount_build(config: Config, platform_name):
     volume_name = get_volume_name(config, platform_name)
     return ['--volume', '{}:/opt/build'.format(volume_name)]
 
-def get_run_options_mount_install(config, platform_name, install_dir):
+def get_run_options_mount_install(config: Config, platform_name, install_dir):
     return ['--mount', 'type=bind,source=' + install_dir + ',target=/opt/install']
 
-def run_build_image(config, platform_name, target, shell, shell_only, privileged, ports_arg):
+def run_build_image(config: Config, platform_name, target,
+                    shell, shell_only, privileged, ports_arg):
     tag_name = get_build_tag_name(config, platform_name)
 
     cmd = []
@@ -1085,7 +1227,7 @@ def run_build_image(config, platform_name, target, shell, shell_only, privileged
                                  + [ tag_name ]
                                  + cmd))
 
-def run_build_image_install(config, platform_name, install_dir):
+def run_build_image_install(config: Config, platform_name, install_dir):
     tag_name = get_build_tag_name(config, platform_name)
     src_path = get_build_source_path(config)
     target = get_release_target(config, platform_name)
@@ -1105,10 +1247,10 @@ def run_build_image_install(config, platform_name, install_dir):
     if returncode != 0:
         sys.exit(1)
 
-def get_install_path(config, platform):
+def get_install_path(config: Config, platform):
     return '/tmp/{}.install'.format(get_release_tag_name(config, platform))
 
-def create_install_dir(config, platform):
+def create_install_dir(config: Config, platform):
     path = get_install_path(config, platform)
     cmd = ['mkdir', '-p', path]
 
@@ -1124,7 +1266,7 @@ def create_install_dir(config, platform):
             'Failed to create install directory: {}'.format(path))
     return path
 
-def remove_install_dir(config, path):
+def remove_install_dir(config: Config, path):
     assert path.startswith('/tmp/') and path.endswith('.install'), "Must only delete valid install path"
     if not os.path.isdir(path):
         return
@@ -1142,12 +1284,12 @@ def remove_install_dir(config, path):
             'Failed to remove install directory: {}'.format(path))
     return path
 
-def clean_install_files(config, platform_name, install_dir):
+def clean_install_files(config: Config, platform_name, install_dir):
     # We have to delete the installs files in a container
     # because the cppdock user wont have to permissions
     if not os.path.isdir(install_dir):
         return
-    base_image = config['cppdock']['cppdock_image']
+    base_image = config.cppdock_image
     assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
     cmd = ['/bin/bash', '-c', 'rm -rf /opt/install/*']
     mount_install = get_run_options_mount_install(config, platform_name, install_dir)
@@ -1157,7 +1299,7 @@ def clean_install_files(config, platform_name, install_dir):
                       + cmd)
     subprocess.call(cmd)
 
-def run_stack_deploy(config, stack_name):
+def run_stack_deploy(config: Config, stack_name):
     # docker stack deploy is already idempotent
     compose_file_data = get_dev_compose_file(config)
     p = subprocess.Popen(['docker', 'stack', 'deploy', '--prune', '--compose-file', '-', stack_name], stdin=subprocess.PIPE)
@@ -1169,7 +1311,7 @@ def run_stack_deploy(config, stack_name):
         """.format(stack_name=stack_name, error_code=p.returncode))
         sys.exit(1)
 
-def run_stack_service_terminal(config, stack_name, platform_name):
+def run_stack_service_terminal(config: Config, stack_name, platform_name):
     service_name = get_service_name(config, platform_name)
     print("""
     TODO shell into {service_name} somehow
@@ -1178,14 +1320,14 @@ def run_stack_service_terminal(config, stack_name, platform_name):
     # TODO finish
     #os.system("docker exec -it {0} bash".format(container_id)
 
-def get_dev_compose_file(config):
+def get_dev_compose_file(config: Config):
     result = get_dev_compose_object(config)
     return json.dumps(remove_none(result), indent=2, separators=(',', ': '))
 
-def get_dev_compose_object(config):
+def get_dev_compose_object(config: Config):
     platform_names = get_all_platforms(config)
     service_confs = [get_dev_compose_file_service(config, platform_name) for platform_name in platform_names]
-    secrets = config.get('secrets', {})
+    secrets = config.secrets
     secrets.update(get_secret_files());
 
     services = {}
@@ -1202,7 +1344,7 @@ def get_dev_compose_object(config):
         'secrets': secrets
     }
 
-def get_dev_compose_file_service(config, platform_name):
+def get_dev_compose_file_service(config: Config, platform_name):
     platform = get_platform_config(config, platform_name)
     if is_platform_service(config, platform_name):
         return get_dev_compose_file_service_service(config, platform_name)
@@ -1284,26 +1426,25 @@ def get_release_tag_name(config, platform_name):
 def get_base_tag_name(config, platform_name):
     return get_image_tag_name(config, platform_name, 'base')
 
-def get_image_tag_name(config, platform_name, image_type):
+def get_image_tag_name(config: Config, platform_name, image_type):
     return "{project}-{platform}{image_type}".format(
-        project     = get_project_name(config),
+        project     = config.project_name,
         platform    = platform_name,
         image_type  = '-' + image_type if image_type != 'release' else '',
     )
 
-def get_stack_name(config):
-    return get_project_name(config)
+def get_stack_name(config: Config):
+    return config.project_name
 
-def get_all_platforms(config):
-    return config['platforms'].keys()
+def get_all_platforms(config: Config):
+    return config.platforms.keys()
 
 def get_platform_config(config, platform_name):
-    return config['platforms'][platform_name]
+    return config.platforms[platform_name]
 
-def get_dev_service_target(config, platform_name):
-    platform = get_platform_config(config, platform_name)
-    service_target = platform.get('service_target')
-    return platform.get('target') or service_target or 'check'
+def get_dev_service_target(config: Config, platform_name):
+    platform = config.platforms[platform_name]
+    return platform.service_cmd
 
 def get_dev_service_init(config, platform_name):
     base_path = os.path.join('.', 'cppdock_recipes')
@@ -1395,14 +1536,14 @@ def cluster_get_worker_token():
 def cluster_get_sync_path(path):
     return "/home/ubuntu/sync{}".format(path)
 
-def cluster_sync_source(config):
-    if not is_allowed_cluster_sync(config):
+def cluster_sync_source(config: Config):
+    if not is_allowed_cluster_sync(config.orig_obj):
         print('Skipping source code sync')
         return
-    machines = get_machine_list(config)
+    machines = config.machine_list
     machine_names = [x[0] for x in machines]
     for name in machine_names:
-        cluster_sync_source_rsync_node(config, name)
+        cluster_sync_source_rsync_node(config.orig_obj, name)
 
 # Intializes source code on all machines
 # after they are built.
@@ -1451,7 +1592,7 @@ def cluster_sync_source_rsync_node(config, name):
 
     [sync_dir(x) for x in config['cppdock'].get('sync_dirs', [''])]
 
-def get_nginx_proxy_conf(config, platform_name):
+def get_nginx_proxy_conf(config: Config, platform_name):
     domain = get_domain(config, platform_name)
     assert domain, 'Nginx proxy requires a domain name'
     locations           = ''
@@ -1778,7 +1919,7 @@ def get_domain(config, platform_name):
 
 def get_build_type(config, platform_name):
     platform = get_platform_config(config, platform_name)
-    default = config.get('__default_build_type', 'debug')
+    default = config.default_build_type
     return platform.get('build_type') \
         or config['cppdock'].get('build_type', default)
 
@@ -1827,11 +1968,13 @@ def get_volume_names(name):
                                    ]).split()
 
 def get_machine_list(config):
+    if isinstance(Config, config):
+        return config.machine_list
     if config.get('machine_list'):
         return config['machine_list']
 
     machines = config.get('machines', {}).items()
-    project_name = get_project_name(config)
+    project_name = config.project_name
     machine_name = lambda x: (project_name + '_' + x).replace('_', '-')
     is_manager = lambda x: x[1].get('manager') == True
 
@@ -1844,24 +1987,21 @@ def get_machine_list(config):
 
     return result
 
-def get_machine_names(config):
-    return (x for (x, y) in get_machine_list(config))
-
 # TODO maybe use this when we actuall do stuff that needs to be
 #      applied to all machines such as rsyncing source code
 # for_every_machine or replace with some kind of iterator
-def for_every_machine(config, fn):
-    for (name, values) in config['machine_list']:
+def for_every_machine(config: Config, fn):
+    for (name, values) in config.machine_list:
         set_machine(name, values)
         fn(name, values)
 
-def set_master_machine(config):
-    machines = get_machine_list(config)
+def set_master_machine(config: Config):
+    machines = config.machine_list
     if len(machines) > 0:
         set_machine(*(machines[0]))
 
-def get_master_machine_name(config):
-    machines = get_machine_list(config)
+def get_master_machine_name(config: Config):
+    machines = config.machine_list
     machine_names = [x[0] for x in machines]
     assert len(machine_names) > 0
     return machine_names[0]
@@ -1892,23 +2032,23 @@ def machine_env(name, values):
           
     return dict(re.findall('export ([A-Z_]+)="([^"]+)"', raw))
 
-def machine_start_all(config):
-    name_list = list(get_machine_names(config))
+def machine_start_all(config: Config):
+    name_list = list(config.machine_list)
     subprocess.check_output(['docker-machine', 'start'] + name_list)
     subprocess.check_output(['docker-machine', 'regenerate-certs',
                                                '--force'] + name_list)
 
-def machine_stop_all(config):
-    names = get_machine_names(config)
+def machine_stop_all(config: Config):
+    names = config.machine_list
     subprocess.check_output(['docker-machine', 'stop'] + list(names))
 
-def machine_rm_all(config):
-    names = get_machine_names(config)
+def machine_rm_all(config: Config):
+    names = config.machine_list
     subprocess.check_output(['docker-machine', 'rm', '-y'] + list(names))
 
-def machine_create_all(config):
+def machine_create_all(config: Config):
     # The first machine is the host
-    xs = get_machine_list(config)
+    xs = config.machine_list
     assert len(xs) > 0, '"machines" must be specified for cluster operations'
 
     machine_create_master(*(xs[0]))
@@ -1989,39 +2129,17 @@ def dev_registry_rm():
     registry_name = 'cppdock-registry'
     subprocess.check_output(['docker', 'service', 'rm', 'cppdock-registry'])
 
-def calculate_source_path(config, config_paths):
-    # should be called AFTER config rewrite
-    source = config["source"]
-    if source and "path" in source:
-        path = source["path"]
-    else:
-        path = config_paths[0]
-
-    if path and not os.path.isdir(path):
-        path = os.path.dirname(path)
-    return path
-
-def calculate_allow_sync(config):
-    # should be called AFTER config rewrite
-    # if source path is explicitly null then
-    # forbid rsync no matter what
-    source = config.get('source')
-    if source and 'path' in source and source['path'] != None:
-        return source.get('allow_sync', True)
-
-    return False
-
-def get_build_source_path(config):
+def get_build_source_path(config: Config):
     # do we imply source path when we set cppdock.base_config?
-    path = config['source']['path']
+    path = config.source.path
     if is_cluster_mode(config):
         path = path or os.path.abspath('./source')
         path = cluster_get_sync_path(path)
     assert path, 'Unable to create source path for build'
     return path
 
-def is_allowed_cluster_sync(config):
-    return config['source']['allow_sync']
+def is_allowed_cluster_sync(config: Config):
+    return config.source.allow_sync
 
 def is_verbose_mode():
     return True;

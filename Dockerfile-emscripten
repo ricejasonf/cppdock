@@ -32,3 +32,4 @@ FROM base_image
   COPY --from=base_image /opt/sysroot/include/heavy/*.sld ./cache/sysroot/include/heavy/
   COPY --from=base_image /opt/sysroot/include/heavy/base/*.sld ./cache/sysroot/include/heavy/base/
   RUN ln -snf /usr/local/emscripten/cache/sysroot/ /opt/sysroot
+  ENV EMSCRIPTEN_ROOT=/usr/local/emscripten
