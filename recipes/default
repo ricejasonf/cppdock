@@ -1,9 +1,23 @@
 #!/bin/bash
 
-mkdir -p build && cd build \
-&& cmake \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
+# This file is used both as the default for building dependencies
+# (via CMake) as well as the default for building the current project.
+set -e
+
+BUILD_TYPE=${BUILD_TYPE:-release}
+TOOLCHAIN_FILE=${TOOLCHAIN_FILE:-/opt/toolchain.cmake}
+TARGET=${TARGET:-install}
+NPROC=${NPROC:-$(nproc)}
+
+cmake \
+    -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE} \
+    -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
     -DCMAKE_INSTALL_PREFIX=/opt/install \
-    -DCMAKE_BUILD_TYPE=Release \
-    .. \
-&& make install
+    ..
+
+# INIT_ONLY is used for allowing a shell environment
+# initiated by cppdock (for debugging CMake files.)
+if [ -z "$INIT_ONLY" ]; then
+  cmake --build . --target $TARGET -- -j$NPROC
+else
+fi
