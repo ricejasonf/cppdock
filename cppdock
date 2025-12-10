@@ -192,7 +192,7 @@ class PlatformSpec(SpecBase):
     def create(config: 'Config', name: str, obj: JsonDict):
         type = obj.get('type')
         match type:
-            case 'linux_x64' | 'emscripten':
+            case 'linux_x64':
                 default_obj = {
                     'base_image': 'ricejasonf/cppdock:linux_x64',
                     'toolchain_file': '/opt/cppdock/toolchains/linux_x64.cmake',

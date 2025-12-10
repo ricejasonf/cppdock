@@ -6,7 +6,7 @@ FROM base_image AS build_binaryen
   RUN git clone --depth=1 --branch version_125 \
     https://github.com/WebAssembly/binaryen.git
   WORKDIR /opt/build
-  RUN cmake -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
+  RUN cmake -DCMAKE_TOOLCHAIN_FILE=/opt/cppdock/toolchains/linux_x64.cmake \
             -DBUILD_TESTS=OFF \
             -DCMAKE_INSTALL_PREFIX=/opt/install \
             /opt/src/binaryen && \

@@ -1,8 +1,9 @@
 #!/bin/bash
-
+#
 # This file is used both as the default for building dependencies
 # (via CMake) as well as the default for building the current project.
 set -e
+
 
 BUILD_TYPE=${BUILD_TYPE:-release}
 TOOLCHAIN_FILE=${TOOLCHAIN_FILE:-/opt/toolchain.cmake}
