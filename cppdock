@@ -26,14 +26,11 @@ default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
 noop = lambda *x: None
 
-# File names to search for recipes for building.
-DefaultRecipeFiles = ["/opt/cppdock/recipes/{name_with_dashes}",
-                      "/opt/cppdock/recipes/default"]
-
 type JsonDict = dict[str, Any]
 
 class SpecBase:
     def __init__(self, obj: JsonDict = {}):
+        self.orig_obj: dict = {}
         self.merge(obj)
 
     def merge(self, obj: JsonDict):
@@ -41,7 +38,6 @@ class SpecBase:
         for attr, value in obj.items():
             if hasattr(self, attr):
                 setattr(self, attr, value)
-    orig_obj: dict = {}
 
 class DepSpec(SpecBase):
     @staticmethod
@@ -59,61 +55,64 @@ class DepSpec(SpecBase):
             case 'mount': return MountDepSpec(platform, dep)
 
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
+        # A PlatformSpec
+        self.platform: 'PlatformSpec' = platform
+        # A nice name that serves as a default for DepSpecs (e.g. repo_name)
+        self.name: str
+        # DepSpec object (May be constructed by string)
+        self.type: str = "github"
+        # Some properties such as "revision" or "volume_name" are
+        # propagated to DepSpec.
+        # Git tag or branch name (also propagated to DepSpec.)
+        self.tag: Optional[str] = None
+        # Path of CMake toolchain file (if different from platform)
+        self.toolchain_file: Optional[str] = None
+        # Force specific file for recipe
+        # (Copied from docker build env to /opt/recipe_script)
+        self.recipe_script: Optional[str] = None
+        # Location to copy from /opt/install
+        self.dest_dir: Optional[str] = None
+        # Lock to a revision and use as a unique label for build stages.
+        # Use None to indicate that the dep is not part of a build stage
+        # (e.g. a volume)
+        self.revision: Optional[str] = None
+
         platform_defaults = {
             'toolchain_file': platform.toolchain_file,
+            'recipe_script': platform.recipe_script,
             'dest_dir': platform.dest_dir
             }
         obj = platform_defaults | obj
-        self.merge(obj)
+        super().__init__(obj)
+        assert isinstance(obj['name'], str)
+        self.name = obj['name']
 
     # FIXME Do revisions ever have slashes?
-    def get_revision_label(self: Self) -> str:
-        assert self.revision is not None
-        return self.revision.replace('/', '_')
-
-    # A PlatformSpec
-    platform: 'PlatformSpec'
-    # A nice name that serves as a default for DepSpecs (e.g. repo_name)
-    name: str
-    # DepSpec object (May be constructed by string)
-    type = "github"
-    # Some properties such as "revision" or "volume_name" are
-    # propagated to DepSpec.
-    # Git tag or branch name (also propagated to DepSpec.)
-    tag: Optional[str] = None
-    # Path of CMake toolchain file (if different from platform)
-    toolchain_file: Optional[str] = None
-    # Force specific file for recipe.
-    # Local ./cppdock_recipes folder contents is copied to
-    # /opt/cppdock_recipes in the container.
-    recipe_file: Optional[str] = None
-    # Location to copy from /opt/install
-    dest_dir: Optional[str] = None
-    # Lock to a revision and use as a unique label for build stages.
-    # Use None to indicate that the dep is not part of a build stage
-    # (e.g. a volume)
-    revision: Optional[str] = None
+    def get_platform_label(self: Self) -> str:
+        return self.name.replace('/', '_')
 
 
 class GitHubDepSpec(DepSpec):
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
-        super().__init__(platform, obj)
+        # Github tag or branch name
+        self.tag: Optional[str] = None
+        # Revision lock value (SHA Digest)
+        self.revision: str
 
-    # Github tag or branch name
-    tag: Optional[str]
-    # Revision lock value (SHA Digest)
-    revision: str
+        super().__init__(platform, obj)
+        self.revision = obj['revision']
 
 class DockerDepSpec(DepSpec):
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
-        super().__init__(platform, obj)
+        # Additional image tag name
+        self.tag: Optional[str] = "latest"
+        # Revision lock value (SHA256 Digest)
+        # An empty string is accepted for local images to
+        # be specified by "{name}:{tag}".
+        self.revision: str
 
-    # Additional image tag name
-    tag: Optional[str] = "latest"
-    # Revision lock value (SHA256 Digest)
-    # An empty string is accepted for local images to
-    # be specified by "{name}:{tag}".
-    revision: str
+        super().__init__(platform, obj)
+        self.revision = obj['revision']
 
     def get_build_stage_spec(self):
         assert self.revision is not None
@@ -124,22 +123,59 @@ class DockerDepSpec(DepSpec):
 
 class VolumeDepSpec(DepSpec):
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
+        # Docker local volume name
+        self.volume_name: Optional[str] = None
+
         if 'volume_name' not in obj:
             obj['volume_name'] = obj['name']
         super().__init__(platform, obj)
-    # Docker local volume name
-    volume_name = None
 
 class MountDepSpec(DepSpec):
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
+        # Local path to mount volume to
+        self.mount_path: Optional[str] = None
+
         super().__init__(platform, obj)
         self.mount_path = obj['mount_path']
-    # Local path to mount volume to
-    mount_path = None
 
 class PlatformSpec(SpecBase):
     def __init__(self, config: 'Config', name: str, obj: JsonDict):
-        self.config = config
+        self.config: 'Config' = config
+        # Specify type.
+        self.type: Optional[str] = None
+        # Specify the name of the platform (via the key of the object.)
+        self.name: str = name
+        # List of list of deps for stages
+        self.deps_stages: List[List[DepSpec]] = []
+        # Name of docker image to base off of
+        self.base_image: Optional[str] = None
+        # Path to Dockerfile to create base image instead of using base_image
+        self.base_image_dockerfile: Optional[str] = None
+        # Path to sysroot directory
+        self.sysroot: str = "/opt/sysroot"
+        # Specify default paths for toolchain_file and recipe_script.
+        # If prefixed with /opt/ then the file is copied from
+        # within the container.
+        # (copies to /opt/toolchain.cmake and /opt/recipe_script)
+        self.toolchain_file: Optional[str] = None
+        self.recipe_script: Optional[str] = None
+        # Path of build directory in container
+        self.build_dir: str = "/opt/build"
+        # File to copy for command to run for container
+        # (which copies to /opt/init_service)
+        self.service_init_script: str = '/opt/cppdock/recipes/default'
+        self.dev_service_target: str = 'check'
+        self.service_cmd: List[str] = ['cmake', '--build', '/opt/build'
+                                  '--self.target', "check"]
+        # Location to copy from /opt/install
+        self.dest_dir: str = "/opt/sysroot"
+        # Name of docker tag to use when pushing release image.
+        self.push_tag: Optional[str] = None  # TODO implement use of this
+        # Specify build_type and release target
+        # for use with `cppdock init_service`
+        self.build_type: Optional[str] = None
+        self.release_target: str = 'install'
+
         deps_list = obj['deps']
         del obj['deps']
         super().__init__(obj)
@@ -159,13 +195,15 @@ class PlatformSpec(SpecBase):
             case 'linux_x64' | 'emscripten':
                 default_obj = {
                     'base_image': 'ricejasonf/cppdock:linux_x64',
-                    'toolchain_file': '/opt/cppdock/toolchains/linux_x64.cmake'
+                    'toolchain_file': '/opt/cppdock/toolchains/linux_x64.cmake',
+                    'service_init_script': '/opt/cppdock/recipes/default'
                 }
                 return PlatformSpec(config, name, default_obj | obj)
             case 'emscripten':
                 default_obj = {
                     'base_image': 'ricejasonf/cppdock:emscripten',
-                    'toolchain_file': '/opt/cppdock/toolchains/emscripten.cmake'
+                    'toolchain_file': '/opt/cppdock/toolchains/emscripten.cmake',
+                    'service_init_script': '/opt/cppdock/recipes/default-emscripten'
                 }
                 return PlatformSpec(config, name, default_obj | obj)
             case 'nginx_proxy':
@@ -178,41 +216,19 @@ class PlatformSpec(SpecBase):
             build_type = get_build_type(self).lower()
         return get_image_tag_name(self, build_type)
 
-
-    config: Config
-    # Specify type.
-    type: Optional[str] = None
-    # Specify the name of the platform (via the key of the object.)
-    name: str
-    # List of list of deps for stages
-    deps_stages: List[List[DepSpec]] = []
-    # Name of docker image to base off of; String | DepSpec
-    base_image: Optional[str] = None
-    # Path to Dockerfile to create base image instead of using base_image
-    base_image_dockerfile: Optional[str] = None
-    # Path to sysroot directory
-    sysroot: str = "/opt/sysroot"
-    # List of names to search for recipe file when building dependency.
-    recipe_files: List[str] = DefaultRecipeFiles
-    # Path of CMake toolchain file
-    toolchain_file: str = "/opt/toolchain.cmake"
-    # Path of build directory in container
-    build_dir: str = "/opt/build"
-    # Command for container
-    service_cmd: List[str] = ['cmake', '--build', '/opt/build'
-                              '--target', "check"]
-    # Location to copy from /opt/install
-    dest_dir: str = "/opt/sysroot"
-    # Name of docker tag to use when pushing release image.
-    push_tag: Optional[str] = None  # TODO implement use of this
-    # Specify build_type and release target
-    # for use with `cppdock init_dev_service`
-    build_type: Optional[str] = None
-    release_target: str = 'install'
-
 class ServiceSpec(PlatformSpec):
     def __init__(self, config: 'Config', name: str, obj: dict):
+        self.uri_prefix: str = '/'
+        self.ports: List[str] = []
+        self.domain: str
+        self.web_root: str
+        # Do not actually put passwords here.
+        self.secrets: JsonDict = {}
+        self.environment: JsonDict = {}
+
         super().__init__(config, name, config.service_defaults | obj)
+        self.domain = self.orig_obj['domain']
+        self.web_root = self.orig_obj['web_root']
 
     def make_service_image(self, print_only: bool):
         pass
@@ -224,24 +240,21 @@ class ServiceSpec(PlatformSpec):
     def get_dev_compose_file_service_service(self):
         default_compose_file_service(self)
 
-    uri_prefix: str = '/'
-    ports: List[str] = []
-    domain: str
-    web_root: str
-    # Do not actually put passwords here.
-    secrets: JsonDict = {}
-    environment: JsonDict = {}
-
 class NginxProxySpec(ServiceSpec):
+    def __init__(self, config: 'Config', name: str, obj: dict):
+        self.volume_name: str = 'web_root'
+        super().__init__(config, name, obj)
+
     def get_dev_compose_file_service_service(self):
         get_service_nginx_proxy(self)
 
     def get_volume_name(self, build_type = None):
         return self.volume_name
 
-    volume_name: str = 'web_root'
-
 class PostgresSpec(ServiceSpec):
+    def __init__(self, config: 'Config', name: str, obj: dict):
+        super().__init__(config, name, obj)
+
     def make_service_image(self, print_only: bool):
         make_nginx_proxy_image(self, print_only)
 
@@ -254,6 +267,12 @@ class PostgresSpec(ServiceSpec):
 
 
 class SourceSpec(SpecBase):
+    def __init__(self, obj: JsonDict = {}):
+        self.path: Optional[str] = None
+        self.allow_sync: bool = False
+        self.sync_dirs: Optional[List[str]] = None
+        super().__init__(obj)
+
     @staticmethod
     def create(obj: JsonDict):
         type = obj.get('type')
@@ -264,61 +283,60 @@ class SourceSpec(SpecBase):
                 return MountSourceSpec(obj)
             case 'git':
                 return GitSourceSpec(obj)
-    path: Optional[str] = None
-    allow_sync: bool = False
-    sync_dirs: Optional[List[str]] = None
 
 class MountSourceSpec(SourceSpec):
-    # Host machine path to mount volume to /opt/src
-    path: str = "."
+    def __init__(self, obj: JsonDict = {}):
+        # Host machine path to mount volume to /opt/src
+        super().__init__(obj)
+        self.path = self.path or "."
 
 class GitSourceSpec(SourceSpec):
     def __init__(self, obj: JsonDict):
+        self.tag: str = 'master'
+        # A filename for a bash script to initialize the source code
+        # This does some weird file loading and appending junk.
+        self.init: Optional[str] = None
+        # Use a repo name to generate script instead of `init`.
+        self.repo: Optional[str] = None
         super().__init__(obj)
+        self.path: str = self.path or './source'
         self.allow_sync = (self.path is not None and
                            self.allow_sync is None)
-    tag: str = 'master'
-    # A filename for a bash script to initialize the source code
-    # This does some weird file loading and appending junk.
-    init: Optional[str] = None
-    # Use a repo name to generate script instead of `init`.
-    repo: Optional[str] = None
 
 class Config(SpecBase):
     def __init__(self, obj: JsonDict):
+        # Specify build type (The default is set to different
+        #                     values depending on context)
+        self.default_build_type: str = 'debug'
+        # Make a nice name for the current project.
+        self.project_name: str
+        # Specify docker image for cppdock stuff. (not locked)
+        self.cppdock_image: str = "ricejasonf/cppdock"
+        # Define various platforms.
+        self.platforms: dict[str, PlatformSpec] = {}
+        # Define how to manage source code for the project
+        # mounting to /opt/src in the container
+        # (which is the current directory by default.)
+        self.source: SourceSpec = MountSourceSpec()
+        # Support specifying remote machines to build on.
+        # TODO Make MachineSpec for elements of this.
+        self.machine_list: List[Any] = []
+        # Local Docker registry to use
+        self.registry: str = '127.0.0.1:5000'
+        # Docker compose service defaults (e.g. domain_name)
+        self.service_defaults: JsonDict = {}
+        # Top level secrets for docker compose
+        # Do not put actual secrets here.
+        self.secrets: dict[str, Any] = {}
+
         super().__init__(obj)
         cppdock = self.orig_obj['cppdock']
         self.project_name = cppdock.get('name')
         self.merge(cppdock)
         for platform_name, platform_obj in obj['platforms'].items():
-            self.platforms[platform_name] = PlatformSpec(self,
-                                                         platform_name,
-                                                         platform_obj)
+            self.platforms[platform_name] = PlatformSpec.create(
+                    self, platform_name, platform_obj)
         self.machine_list = get_machine_list(self.orig_obj)
-
-    # Specify build type (The default is set to different
-    #                     values depending on context)
-    default_build_type: str = 'debug'
-    # Make a nice name for the current project.
-    project_name: str
-    # Specify docker image for cppdock stuff. (not locked)
-    cppdock_image: str = "ricejasonf/cppdock"
-    # Define various platforms.
-    platforms: dict[str, PlatformSpec] = {}
-    # Define how to manage source code for the project
-    # mounting to /opt/src in the container
-    # (which is the current directory by default.)
-    source: SourceSpec = MountSourceSpec()
-    # Support specifying remote machines to build on.
-    # TODO Make MachineSpec for elements of this.
-    machine_list: List[Any] = []
-    # Local Docker registry to use
-    registry: str = '127.0.0.1:5000'
-    # Docker compose service defaults (e.g. domain_name)
-    service_defaults: JsonDict = {}
-    # Top level secrets for docker compose
-    # Do not put actual secrets here.
-    secrets: dict[str, Any] = {}
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -595,7 +613,8 @@ def command_build(args):
     config = load_config_file_with_args(args)
     set_master_machine(config)
 
-    platforms = [args.platform] if args.platform else get_all_platforms(config)
+    platforms = [config.platforms[args.platform]] \
+            if args.platform else get_all_platforms(config)
     for platform in platforms:
         make_build_image(platform, args.print_only)
 
@@ -606,7 +625,8 @@ def command_release(args):
     print_only = False
     tag_name = args.push or args.tag
 
-    platforms = [args.platform] if args.platform else get_all_platforms(config)
+    platforms = [config.platforms[args.platform]] \
+            if args.platform else get_all_platforms(config)
 
     if tag_name and len(platforms) > 1:
         raise StandardError(
@@ -709,9 +729,8 @@ def command_dev_cluster(args):
     elif (args.print_only):
         print(get_dev_compose_file(config))
     else:
-        # make the build images
-        # FIXME use platform instead of platform name
-        [make_build_image(config, p) for p in get_all_platforms(config)]
+        # Make the build images.
+        [make_build_image(p, args.print_only) for p in get_all_platforms(config)]
 
         if is_cluster_mode(config):
             print("Running in CLUSTER mode...")
@@ -746,7 +765,7 @@ def command_dev_registry(args):
         dev_registry_create()
 
 def command_install_dep(args):
-    # This called inside a container so config is not allowed
+    # This is called inside a container so config is not allowed.
     # Even if we add a merged config file to the container we
     # do not want it available at this stage or things will
     # be rebuilt for every config change
@@ -768,8 +787,11 @@ def command_install_dep(args):
 
     zipfile.ZipFile('dep.zip', 'r').extractall()
     recipe = find_recipe(args.platform, args.repo)
-    cwd_dir = [x for x in os.listdir('.') if x.endswith(args.branch)][0]
-    p = subprocess.Popen([recipe], cwd = cwd_dir)
+    source_dir = [x for x in os.listdir('.') \
+                    if x.endswith(args.branch)][0]
+    os.rename(os.path.join('/usr/local/src/', source_dir),
+              '/opt/src')
+    p = subprocess.Popen([recipe], cwd = '/opt/build')
     p.communicate('')
     if p.returncode != 0:
         print("""
@@ -835,7 +857,8 @@ def command_clean(args):
     # Use `cppdock dev_cluster --stop` for deployed stacks.
     config = load_config_file_with_args(args)
     set_master_machine(config)
-    platforms = [args.platform] if args.platform else get_all_platforms(config)
+    platforms = [config.platforms[args.platform]] \
+            if args.platform else get_all_platforms(config)
     clean_types = [args.clean_type] if args.clean_type != 'all' else ['install',
                                                                       'build',
                                                                       'images']
@@ -863,12 +886,6 @@ def command_clean(args):
 
             else: 
                 raise ValueError('Unsupported clean type')
-
-def install_deps_platform(platform, items):
-    for i in range(len(items)):
-        repo, branch = items[i]
-        branch = branch[0:40]
-        install_dep(i, platform, repo, branch)
 
 def load_config_file_with_args(args):
     json_file_path = args.json_file_path
@@ -1023,9 +1040,6 @@ def normalize_branch_name(name):
     else:
         return "refs/heads/" + name
 
-def is_sha(name):
-    return len(name) == 40
-
 def check_base_image_conflict(settings):
     if 'base_image' in settings and 'base_image_dockerfile' in settings:
         raise StandardError("Conflicting base image settings detected")
@@ -1036,10 +1050,11 @@ def make_archive_url(repo, branch):
 def get_base_image_dockerfile(platform: PlatformSpec):
     return platform.base_image_dockerfile
 
-def get_user_base_tag_name(platform: PlatformSpec):
+def get_user_base_tag_name(platform: PlatformSpec) -> str:
     if platform.base_image_dockerfile:
         return get_image_tag_name(platform, 'user_base')
-    return platform.base_image
+    else:
+        return platform.base_image or get_base_tag_name(platform)
 
 def get_base_image_dockerfile_data(platform: PlatformSpec):
     tag_name = get_user_base_tag_name(platform)
@@ -1049,7 +1064,7 @@ def get_base_image_dockerfile_data(platform: PlatformSpec):
 FROM {tag_name}
     # installs cppdock in base image
     COPY --from={cppdock_tag_name} /opt/install/ /usr/local
-    COPY --from={cppdock_tag_name} /root/.cppdock_recipes/ /root/.cppdock_recipes
+    COPY --from={cppdock_tag_name} /opt/cppdock/ /opt/cppdock
     RUN mkdir -p /opt/install && \
         mkdir -p {build_dir} && \
         touch /opt/toolchain.cmake
@@ -1074,12 +1089,19 @@ def make_base_image_dockerfile(platform: PlatformSpec, print_only):
             dockerfile_data = file.read()
         make_docker_image(tag_name, dockerfile_data, print_only)
 
-def find_recipe(platform, repo):
+def find_recipe(platform: str, repo):
+    if os.path.isfile('/opt/cppdock_recipe'):
+        return '/opt/cppdock_recipe'
+    
     # make a flat list of recipe file paths
     # to search linearly
-    base_paths = ['/opt/cppdock_recipes',
-                  '/opt/sysroot/cppdock_recipes',
-                  '/root/.cppdock_recipes']
+    base_paths = [
+            # User recipes (copied from ./cppdock_recipes)
+            '/opt/cppdock_recipes',
+            # Base image provided specific recipes
+            '/opt/sysroot/cppdock_recipes',
+            # Default recipes
+            '/opt/cppdock/recipes']
 
     repo = repo.replace('/', '-')
     repo_with_platform = repo + '-' + platform
@@ -1169,28 +1191,38 @@ def make_deps_dockerfile(platform: PlatformSpec):
     build_type = get_build_type(platform)
     target = get_dev_service_target(platform)
 
-    dev_service_init = get_dev_service_init(platform)
-    copy_dev_service_init = ''
-    if dev_service_init:
-        copy_dev_service_init = "COPY {} /opt/dev_service_init".format(
-                dev_service_init)
+    service_init = get_service_init(platform)
+    copy_service_init = ''
+    if service_init:
+        copy_service_init = "RUN cp {} /opt/service_init".format(
+                service_init)
+
+    copy_toolchain = ''
+    if platform.toolchain_file.startswith('/opt/'):
+        copy_toolchain = """
+    RUN cp {} /opt/toolchain.cmake""".format(platform.toolchain_file)
+    else:
+        copy_toolchain = """
+    COPY {} /opt/toolchain.cmake""".format(platform.toolchain_file)
 
     for deps in platform.deps_stages:
         deps_stages += " ".join([make_deps_stage(base_image, platform, deps)])
         deps_imports += make_deps_import(deps[-1])
 
-    # FIXME Use JSON array for CMD.
+    # FIXME I think it is incorrect to use CMD here since init_dev_service calls the
+    #       script for running the main image (not this dependency.)
     return """
 {deps_stages}
 FROM {base_image}
 {deps_imports}
-    {copy_dev_service_init}
+    {copy_service_init}{copy_toolchain}
     WORKDIR /opt/build
-    CMD cppdock init_dev_service --shell-only {build_type} {target}
+    CMD ["cppdock", "init_dev_service", "--shell-only", "{build_type}", "{target}"]
 """.format(deps_stages              = deps_stages,
            base_image               = base_image,
            deps_imports             = deps_imports,
-           copy_dev_service_init    = copy_dev_service_init,
+           copy_service_init        = copy_service_init,
+           copy_toolchain           = copy_toolchain,
            build_type               = build_type,
            target                   = target)
     return
@@ -1210,16 +1242,16 @@ def make_deps_stage(base_image, platform: PlatformSpec, deps: list[DepSpec]):
     else:
       install_deps = " ".join([make_install_dep(platform, dep) for dep in deps])
 
-    revision = deps[-1].get_revision_label()
+    platform_label = deps[-1].get_platform_label()
 
     return """
 FROM {0} AS build_{2}_{1}
     {4}
     WORKDIR /usr/local/src
     {3}
-""".format(build_image, platform.name, revision, install_deps, copy_recipes_term)
+""".format(build_image, platform.name, platform_label, install_deps, copy_recipes_term)
 
-def get_stage_docker_image_digest(stage_deps: list[DepSpec]):
+def get_stage_docker_image_digest(stage_deps: List[DepSpec]):
     if len(stage_deps) == 1:
         for dep in stage_deps:
             if isinstance(dep, DockerDepSpec):
@@ -1229,7 +1261,7 @@ def get_stage_docker_image_digest(stage_deps: list[DepSpec]):
     return None
 
 def make_install_dep(platform: PlatformSpec, dep: DepSpec):
-    revision = ''
+    revision = dep.revision
     repo_name = dep.name
     if isinstance(dep, DockerDepSpec):
         revision = dep.revision
@@ -1238,28 +1270,43 @@ def make_install_dep(platform: PlatformSpec, dep: DepSpec):
     COPY --from={repo_name}@{revision} /opt/install {dest_dir}
     COPY --from={repo_name}@{revision} /opt/install /opt/install"""
 
-    if not is_sha(revision):
+    if revision is None:
         return ''
-    repo_recipe_prefix = repo_name.replace('/', '-')
+
+    assert isinstance(dep, GitHubDepSpec)
+
+    # Copy user specified recipe to keep changes to arbitrary recipe files
+    # from invalidating the entire set of build stages for every dependency.
     copy_local_recipe = ''
-    if os.path.isfile(os.path.join(root_path, 'cppdock_recipes',
-                                   repo_recipe_prefix + '-' + platform.name)):
-        copy_local_recipe = """
-    COPY cppdock_recipes/{0}-{1} /opt/cppdock_recipes/""".format(repo_recipe_prefix,
-                                                                 platform.name)
-    elif os.path.isfile(os.path.join(root_path, 'cppdock_recipes', repo_recipe_prefix)):
-        copy_local_recipe = """
-    COPY cppdock_recipes/{0} /opt/cppdock_recipes/""".format(repo_recipe_prefix)
+    if dep.recipe_script is not None:
+        if dep.recipe_script.startswith('/opt/'):
+            copy_local_recipe = """
+    RUN cp {} /opt/recipe_script""".format(dep.recipe_script)
+        else:
+            copy_local_recipe = """
+    COPY {} /opt/recipe_script""".format(dep.recipe_script)
+
+    # Copy local toolchain or copy container toolchain to /opt/toolchain.cmake
+    copy_local_toolchain = ''
+    if dep.toolchain_file is not None:
+        if dep.toolchain_file.startswith('/opt/'):
+            copy_local_recipe = """
+    RUN cp {} /opt/toolchain.cmake""".format(dep.toolchain_file)
+        else:
+            copy_local_recipe = """
+    COPY {} /opt/toolchain.cmake""".format(dep.toolchain_file)
+    
 
     return """{3}
-    RUN cppdock install_dep {0} {1} {2}""".format(platform.name, revision,
-                                                  repo_name, copy_local_recipe)
+    {4}
+    RUN cppdock install_dep {0} {1} {2}""".format(
+            platform.name, revision, repo_name,
+            copy_local_recipe, copy_local_toolchain)
 
 def make_deps_import(dep: DepSpec):
-    breakpoint()
     return """
     COPY --from=build_{1}_{0} /opt/install/ {2}""".format(
-            dep.platform.name, dep.get_revision_label(), dep.dest_dir)
+            dep.platform.name, dep.get_platform_label(), dep.dest_dir)
 
 def get_run_options_mount_source(config: Config):
     src_path = get_build_source_path(config)
@@ -1495,20 +1542,23 @@ def get_all_platforms(config: Config) -> List[PlatformSpec]:
     return list(config.platforms.values())
 
 def get_dev_service_target(platform: PlatformSpec):
-    return platform.service_cmd
+    return platform.dev_service_target
 
-def get_dev_service_init(platform: PlatformSpec):
-    base_path = os.path.join('.', 'cppdock_recipes')
-    path1 = os.path.join(base_path, 'this-' + platform.name)
-    path2 = os.path.join(base_path, 'this')
-    if os.path.isfile(path1):
-        return path1
-    elif os.path.isfile(path2):
-        return path2
-    else:
-        return None
+def get_service_init(platform: PlatformSpec):
+    return platform.service_init_script
+
+#    base_path = os.path.join('.', 'cppdock_recipes')
+#    path1 = os.path.join(base_path, 'this-' + platform.name)
+#    path2 = os.path.join(base_path, 'this')
+#    if os.path.isfile(path1):
+#        return path1
+#    elif os.path.isfile(path2):
+#        return path2
+#    else:
+#        return None
 
 def run_dev_service_cmake(build_type, target = None, init_only = ''):
+    warnings.warn("run_dev_service_cmake is deprecated", DeprecationWarning)
     cmake_commands = ['cmake']
     emscripten_root = os.getenv('EMSCRIPTEN_ROOT')
     if emscripten_root:
@@ -1532,8 +1582,8 @@ def run_dev_service_cmake(build_type, target = None, init_only = ''):
 
     return None
 
-def run_dev_service_init(build_type, target, init_only = ''):
-    cmd = remove_none(['/opt/dev_service_init'])
+def run_service_init(build_type, target, init_only = ''):
+    cmd = remove_none(['/opt/service_init'])
     env = dict(os.environ, BUILD_TYPE   = build_type,
                            TARGET       = target,
                            INIT_ONLY    = init_only)
@@ -1548,8 +1598,8 @@ def run_dev_service_target(build_type, target,
                            keep_alive = True):
     # This should run in a docker container
 
-    has_init= os.path.isfile('/opt/dev_service_init')
-    init_fn = run_dev_service_init if has_init else run_dev_service_cmake
+    has_init= os.path.isfile('/opt/service_init')
+    init_fn = run_service_init if has_init else run_dev_service_cmake
 
     if shell_only:
         init_fn(build_type, '', "INIT_ONLY")

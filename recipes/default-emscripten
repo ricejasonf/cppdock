@@ -1,9 +1,19 @@
 #!/bin/bash
+#
+# This file is used both as the default for building dependencies
+# (via emcmake) as well as the default for building the current project.
+set -e
+
+EMSCRIPTEN_ROOT=${EMSCRIPTEN_ROOT-:/usr/local/emscripten}
+BUILD_TYPE=${BUILD_TYPE:-release}
+TOOLCHAIN_FILE=${TOOLCHAIN_FILE:-/opt/toolchain.cmake}
+TARGET=${TARGET:-install}
+NPROC=${NPROC:-$(nproc)}
 
 mkdir -p build && cd build \
-&& /usr/local/emscripten/emcmake cmake \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
+&& ${EMSCRIPTEN_ROOT}/emcmake cmake \
+    -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE} \
+    -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
     -DCMAKE_INSTALL_PREFIX=/opt/install \
-    -DCMAKE_BUILD_TYPE=Release \
-    .. \
+    /opt/src \
 && make install

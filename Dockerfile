@@ -8,5 +8,6 @@ RUN  apt-get update \
 
 COPY cppdock /usr/local/bin/
 COPY cppdock /opt/install/bin/
-COPY recipes/ /root/.cppdock_recipes
+COPY recipes/ /opt/cppdock/recipes
+COPY toolchains/ /opt/cppdock/toolchains
 RUN ln -s /usr/local /opt/sysroot

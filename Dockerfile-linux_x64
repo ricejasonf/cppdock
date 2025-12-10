@@ -1,7 +1,3 @@
 FROM ricejasonf/cppdock:latest
   COPY --from=ricejasonf/llvm-project-heavy /opt/install/ /opt/sysroot
-  COPY toolchain/linux_x64.cmake /opt/toolchain.cmake
-  COPY cppdock /usr/local/bin/
-  COPY cppdock /opt/install/bin/
-  COPY recipes/ /root/.cppdock_recipes
   RUN ldconfig

@@ -7,5 +7,5 @@ mkdir build && cd build \
   -DCMAKE_BUILD_TYPE=Release \
   -DJSONCPP_WITH_TESTS=OFF \
   -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF\
-  .. \
+  /opt/src \
 && make install

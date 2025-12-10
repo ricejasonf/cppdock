@@ -22,8 +22,9 @@ FROM base_image AS build_emscripten
   
 FROM base_image
   COPY cppdock /usr/local/bin/
-  COPY recipes/ /root/.cppdock_recipes
-  COPY toolchain/emscripten.cmake /opt/toolchain.cmake
+  COPY recipes/ /opt/cppdock/recipes
+  COPY toolchains/ /opt/cppdock/toolchains
+  COPY toolchains/emscripten.cmake /opt/toolchains.cmake
   COPY --from=build_binaryen /opt/install/ /usr/local
   COPY --from=build_emscripten /opt/install/ /usr/local
   WORKDIR /usr/local/emscripten
