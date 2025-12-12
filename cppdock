@@ -176,8 +176,9 @@ class PlatformSpec(SpecBase):
         self.build_type: Optional[str] = None
         self.release_target: str = 'install'
 
-        deps_list = obj['deps']
-        del obj['deps']
+        deps_list = obj.get('deps', [])
+        if 'deps' in obj:
+            del obj['deps']
         super().__init__(obj)
         self.name = name
         for deps_stage in deps_list:
@@ -210,6 +211,8 @@ class PlatformSpec(SpecBase):
                 return NginxProxySpec(config, name, obj)
             case 'postgres':
                 return PostgresSpec(config, name, obj)
+            case _:
+                return PlatformSpec(config, name, obj)
 
     def get_volume_name(self, build_type = None):
         if build_type == None:
@@ -317,7 +320,7 @@ class Config(SpecBase):
         # Define how to manage source code for the project
         # mounting to /opt/src in the container
         # (which is the current directory by default.)
-        self.source: SourceSpec = MountSourceSpec()
+        self.source: SourceSpec
         # Support specifying remote machines to build on.
         # TODO Make MachineSpec for elements of this.
         self.machine_list: List[Any] = []
@@ -333,6 +336,7 @@ class Config(SpecBase):
         cppdock = self.orig_obj['cppdock']
         self.project_name = cppdock.get('name')
         self.merge(cppdock)
+        self.source: SourceSpec = SourceSpec.create(obj.get('source', {}))
         for platform_name, platform_obj in obj['platforms'].items():
             self.platforms[platform_name] = PlatformSpec.create(
                     self, platform_name, platform_obj)
@@ -416,14 +420,12 @@ def parse_args_release(args):
                                         default   = default_json_file_path,
                                         help      = 'Specify path to json file')
     parser.add_argument('--push',       dest      = 'push',
-                                        default   = None,
-                                        help      = 'Tag name to push')
+                                        action    = 'store_true',
+                                        help      = 'Indicate docker push')
     parser.add_argument('--tag',        dest      = 'tag',
                                         default   = None,
-                                        help      = 'Tag without pushing')
-    parser.add_argument('platform',     default   = None,
-                                        nargs     = '?',
-                                        help      = 'Name of target platform')
+                                        help      = 'Specify alternate tag')
+    parser.add_argument('platform',     help      = 'Name of target platform')
 
     return parser.parse_args(args)
 
@@ -623,25 +625,29 @@ def command_release(args):
     config.default_build_type = 'release'
     set_master_machine(config)
     print_only = False
-    tag_name = args.push or args.tag
 
-    platforms = [config.platforms[args.platform]] \
-            if args.platform else get_all_platforms(config)
+    platform = config.platforms[args.platform]
+    tag_name = args.tag or platform.push_tag
 
-    if tag_name and len(platforms) > 1:
+    if tag_name is None or len(tag_name) == 0:
         raise StandardError(
-        "The `push` or `tag` option is not allowed with multiple platforms")
+                'Platform "push_tag" property or cli "--tag" must be set')
 
-    for platform in platforms:
-        make_build_image(platform, print_only)
-        install_dir = create_install_dir(platform)
-        run_build_image_install(platform, install_dir)
-        make_release_image(platform, install_dir)
-        if tag_name:
-            image_name = get_release_tag_name(platform)
-            subprocess.check_output(['docker', 'tag', image_name, tag_name])
-        if tag_name and args.push:
-            subprocess.check_output(['docker', 'push', tag_name])
+    make_build_image(platform, print_only)
+    install_dir = create_install_dir(platform)
+    run_build_image_install(platform, install_dir)
+    make_release_image(platform, install_dir)
+    image_name = get_release_tag_name(platform)
+    if tag_name:
+        print(f'Tagging image {image_name}: {tag_name}')
+        subprocess.check_output(['docker', 'tag', image_name, tag_name])
+    if tag_name and args.push:
+        print(f'Pushing release with tag: {tag_name}')
+        subprocess.check_output(['docker', 'push', tag_name])
+    elif tag_name:
+        print(f"Skipping push: {tag_name}")
+    else:
+        print("Skipping push")
 
 def make_build_image(platform: PlatformSpec, print_only = False):
     if isinstance(platform, ServiceSpec):
@@ -663,14 +669,14 @@ def make_release_image(platform: PlatformSpec, context_dir):
     if is_cluster_mode(platform.config):
         machine_name = get_master_machine_name(platform.config)
         make_docker_image_remote(machine_name, release_tag_name, dockerfile,
-                                 context_dir) 
+                                 context_dir)
     else:
         make_docker_image(release_tag_name, dockerfile, print_only, context_dir)
     return release_tag_name
 
 def make_release_dockerfile(platform: PlatformSpec, build_image):
     base_image = "ubuntu:bionic" # TODO use config or something
-    
+
     return """
 FROM {base_image}
     COPY ./ /opt/install
@@ -884,7 +890,7 @@ def command_clean(args):
                                          get_base_tag_name(platform),
                                          get_release_tag_name(platform)])
 
-            else: 
+            else:
                 raise ValueError('Unsupported clean type')
 
 def load_config_file_with_args(args):
@@ -998,7 +1004,7 @@ def lock_item_json(item):
 def get_current_sha_with_comment(item):
     repo = item['name']
     tag = item.get('tag')
-    source = item.get('source')
+    source = item.get('type', (item.get('source')))
 
     if 'revision' in item:
         return item['revision']
@@ -1092,7 +1098,7 @@ def make_base_image_dockerfile(platform: PlatformSpec, print_only):
 def find_recipe(platform: str, repo):
     if os.path.isfile('/opt/cppdock_recipe'):
         return '/opt/cppdock_recipe'
-    
+
     # make a flat list of recipe file paths
     # to search linearly
     base_paths = [
@@ -1193,8 +1199,11 @@ def make_deps_dockerfile(platform: PlatformSpec):
 
     service_init = get_service_init(platform)
     copy_service_init = ''
-    if service_init:
+    if service_init and service_init.startswith('/opt/'):
         copy_service_init = "RUN cp {} /opt/service_init".format(
+                service_init)
+    else:
+        copy_service_init = "COPY {} /opt/service_init".format(
                 service_init)
 
     copy_toolchain = ''
@@ -1295,7 +1304,6 @@ def make_install_dep(platform: PlatformSpec, dep: DepSpec):
         else:
             copy_local_recipe = """
     COPY {} /opt/toolchain.cmake""".format(dep.toolchain_file)
-    
 
     return """{3}
     {4}
@@ -1309,6 +1317,7 @@ def make_deps_import(dep: DepSpec):
             dep.platform.name, dep.get_platform_label(), dep.dest_dir)
 
 def get_run_options_mount_source(config: Config):
+    assert isinstance(config.source, MountSourceSpec)
     src_path = get_build_source_path(config)
     return ['--mount', 'type=bind,source=' + src_path + ',target=/opt/src,readonly']
 
@@ -1335,7 +1344,7 @@ def run_build_image(platform: PlatformSpec, target,
     mount_src = get_run_options_mount_source(platform.config)
 
     subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg, privileged_op]
-                                 + mount_src 
+                                 + mount_src
                                  + mount_build
                                  + [ tag_name ]
                                  + cmd))
@@ -1353,7 +1362,7 @@ def run_build_image_install(platform: PlatformSpec, install_dir):
     mount_src = get_run_options_mount_source(config)
     mount_install = get_run_options_mount_install(platform, install_dir)
     returncode = subprocess.call(remove_none(['docker', 'run', '--rm']
-                                 + mount_src 
+                                 + mount_src
                                  + mount_build
                                  + mount_install
                                  + [ tag_name ]
@@ -1587,7 +1596,7 @@ def run_service_init(build_type, target, init_only = ''):
     env = dict(os.environ, BUILD_TYPE   = build_type,
                            TARGET       = target,
                            INIT_ONLY    = init_only)
-                           
+
     p = subprocess.Popen(cmd, cwd = '/opt/build', env = env)
     p.communicate('')
     return p
@@ -1887,7 +1896,6 @@ def get_nginx_location_websocket(uri, service_name, port):
         proxy_set_header Connection "upgrade";
       }}""".format(uri           = uri,
                    service_name  = service_name)
-                   
 
 def get_service_nginx_proxy(platform: NginxProxySpec):
     config = platform.config
@@ -2115,7 +2123,7 @@ def machine_env(name, values):
         return values['env']
     else:
         raw = subprocess.check_output(['docker-machine', 'env', name])
-          
+
     return dict(re.findall('export ([A-Z_]+)="([^"]+)"', raw))
 
 def machine_start_all(config: Config):
@@ -2192,8 +2200,8 @@ def machine_rsync(name, src_path, dest_path):
             '-o LogLevel=quiet'
             ])
     subprocess.check_output(['rsync', '--recursive',
-                                      '--progress', 
-                                      '--times', 
+                                      '--progress',
+                                      '--times',
                                       '-e', ssh_command,
                                       src_path, node_path])
 
