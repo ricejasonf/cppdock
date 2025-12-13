@@ -9,12 +9,10 @@ set(CMAKE_CXX_COMPILER_WORKS 1)
 set(CMAKE_CXX_FLAGS "-stdlib=libc++ --target=x86_64-unknown-linux-gnu" CACHE STRING "" FORCE)
 set(CMAKE_SYSTEM_INCLUDE_PATH "/opt/sysroot/include" CACHE STRING "" FORCE)
 set(CMAKE_FIND_ROOT_PATH "/opt/sysroot" CACHE STRING "" FORCE)
-include_directories("/opt/sysroot/include/c++/v1")
+#include_directories("/opt/sysroot/include/c++/v1")
 
 # Dynamic linking stuff
-set(CMAKE_EXE_LINKER_FLAGS
-  "-Wl,--rpath=$ORIGIN/../lib -Wl,--rpath=/usr/local/lib/x86_64-unknown-linux-gnu/"
-  CACHE STRING "" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS "-Wl,--rpath=/usr/local/lib" CACHE STRING "" FORCE)
 
 # Compiler Features
 set(CMAKE_C_COMPILE_FEATURES "c_std_90;c_function_prototypes;c_std_99;c_restrict;c_variadic_macros;c_std_11;c_static_assert")
