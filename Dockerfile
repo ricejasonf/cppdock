@@ -2,7 +2,8 @@ FROM ubuntu:25.10
 
 RUN  apt-get update \
   && apt-get -yq install \
-      python-is-python3 cmake git autoconf bash-completion vim wget xz-utils \
+      python-is-python3 python3-pip cmake git autoconf bash-completion vim wget xz-utils \
+  && pip install lit --break-system-packages \
   && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
   && echo 'set hlsearch' >> /root/.vimrc
 

@@ -40,6 +40,10 @@ class SpecBase:
                 setattr(self, attr, value)
 
 class DepSpec(SpecBase):
+    # Indicate if this is a volume or bind mount type
+    # that must be overlay mounted on its dest_dir.
+    _is_overlay_mounted:bool = False
+
     @staticmethod
     def create(platform: 'PlatformSpec', dep: JsonDict):
         if 'type' not in dep and 'source' in dep:
@@ -91,6 +95,9 @@ class DepSpec(SpecBase):
     def get_platform_label(self: Self) -> str:
         return self.name.replace('/', '_')
 
+    def create_mount_option(self, unique_id: int):
+        return None
+
 
 class GitHubDepSpec(DepSpec):
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
@@ -122,6 +129,8 @@ class DockerDepSpec(DepSpec):
             return '{0}@{1}'.format(name, revision)
 
 class VolumeDepSpec(DepSpec):
+    _is_overlay_mounted:bool = True
+
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
         # Docker local volume name
         self.volume_name: Optional[str] = None
@@ -131,12 +140,20 @@ class VolumeDepSpec(DepSpec):
         super().__init__(platform, obj)
 
 class MountDepSpec(DepSpec):
+    _is_overlay_mounted:bool = True
+
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
         # Local path to mount volume to
         self.mount_path: Optional[str] = None
 
         super().__init__(platform, obj)
         self.mount_path = obj['mount_path']
+
+    def create_mount_option(self, unique_id: int):
+        # Make a target path that `cppdock init_dev_service`
+        # will find and do the overlay mount thing.
+        dest_dir = f'/opt/.cppdock_overlay_mounts/{unique_id}'
+        return ['--mount', f'type=bind,source={self.mount_path},target={dest_dir}']
 
 class PlatformSpec(SpecBase):
     def __init__(self, config: 'Config', name: str, obj: JsonDict):
@@ -161,6 +178,8 @@ class PlatformSpec(SpecBase):
         self.recipe_script: Optional[str] = None
         # Path of build directory in container
         self.build_dir: str = "/opt/build"
+        # Path of build host directory to bind mount (if any)
+        self.build_dir_mount: Optional[str] = None
         # File to copy for command to run for container
         # (which copies to /opt/init_service)
         self.service_init_script: str = '/opt/cppdock/recipes/default'
@@ -218,6 +237,10 @@ class PlatformSpec(SpecBase):
         if build_type == None:
             build_type = get_build_type(self).lower()
         return get_image_tag_name(self, build_type)
+
+    # Return an enumerated list of all deps.
+    def enumerate_deps(self):
+        return enumerate([x for xs in self.deps_stages for x in xs])
 
 class ServiceSpec(PlatformSpec):
     def __init__(self, config: 'Config', name: str, obj: dict):
@@ -629,6 +652,9 @@ def command_release(args):
     platform = config.platforms[args.platform]
     tag_name = args.tag or platform.push_tag
 
+    # Check that there are no mounted deps.
+    check_deps_for_release(platform)
+
     if tag_name is None or len(tag_name) == 0:
         raise StandardError(
                 'Platform "push_tag" property or cli "--tag" must be set')
@@ -648,6 +674,13 @@ def command_release(args):
         print(f"Skipping push: {tag_name}")
     else:
         print("Skipping push")
+
+def check_deps_for_release(platform: PlatformSpec):
+    for deps in deps_stages:
+        for dep in deps:
+            assert (not dep._is_overlay_mounted), \
+                "release candidate may not contain mounted deps"
+
 
 def make_build_image(platform: PlatformSpec, print_only = False):
     if isinstance(platform, ServiceSpec):
@@ -1056,6 +1089,9 @@ def make_archive_url(repo, branch):
 def get_base_image_dockerfile(platform: PlatformSpec):
     return platform.base_image_dockerfile
 
+# The `user_base` image is the base image specified by the user
+# whereas the `user` image is the base image before installing deps.
+# The `build` image has the dependencies installed.
 def get_user_base_tag_name(platform: PlatformSpec) -> str:
     if platform.base_image_dockerfile:
         return get_image_tag_name(platform, 'user_base')
@@ -1240,7 +1276,6 @@ def make_deps_stage(base_image, platform: PlatformSpec, deps: list[DepSpec]):
     if len(deps) == 0:
         return ''
 
-    copy_recipes_term = ""
     build_image = base_image
 
     # Only DockerDepSpec does not use make_install_dep.
@@ -1255,10 +1290,9 @@ def make_deps_stage(base_image, platform: PlatformSpec, deps: list[DepSpec]):
 
     return """
 FROM {0} AS build_{2}_{1}
-    {4}
     WORKDIR /usr/local/src
     {3}
-""".format(build_image, platform.name, platform_label, install_deps, copy_recipes_term)
+""".format(build_image, platform.name, platform_label, install_deps)
 
 def get_stage_docker_image_digest(stage_deps: List[DepSpec]):
     if len(stage_deps) == 1:
@@ -1270,6 +1304,8 @@ def get_stage_docker_image_digest(stage_deps: List[DepSpec]):
     return None
 
 def make_install_dep(platform: PlatformSpec, dep: DepSpec):
+    if dep._is_overlay_mounted:
+        return ''
     revision = dep.revision
     repo_name = dep.name
     if isinstance(dep, DockerDepSpec):
@@ -1319,14 +1355,19 @@ def make_deps_import(dep: DepSpec):
 def get_run_options_mount_source(config: Config):
     assert isinstance(config.source, MountSourceSpec)
     src_path = get_build_source_path(config)
-    return ['--mount', 'type=bind,source=' + src_path + ',target=/opt/src,readonly']
+    return ['--mount', f"type=bind,source={src_path},target=/opt/src,readonly"]
 
 def get_run_options_mount_build(platform: PlatformSpec):
+    build_dir = platform.build_dir
+    if build_dir_mount := platform.build_dir_mount:
+        return ['--mount',
+                f"type=bind,source={build_dir_mount},target={build_dir}"]
+
     volume_name = platform.get_volume_name()
-    return ['--volume', '{}:/opt/build'.format(volume_name)]
+    return ['--volume', f"{volume_name}:{build_dir}"]
 
 def get_run_options_mount_install(platform: PlatformSpec, install_dir):
-    return ['--mount', 'type=bind,source=' + install_dir + ',target=/opt/install']
+    return ['--mount', f"type=bind,source={install_dir},target=/opt/install"]
 
 def run_build_image(platform: PlatformSpec, target,
                     shell, shell_only, privileged, ports_arg):
@@ -1343,12 +1384,19 @@ def run_build_image(platform: PlatformSpec, target,
     mount_build = get_run_options_mount_build(platform)
     mount_src = get_run_options_mount_source(platform.config)
 
+    # FIXME This is incomplete and not used.
+    #       The idea was to specify mount options and then use something like
+    # https://serverfault.com/questions/841238/how-to-use-overlayfs-with-docker-volumes
+    dep_mounts = [dep.create_mount_option(index)
+                  for index, dep in platform.enumerate_deps()]
+
     subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg, privileged_op]
                                  + mount_src
                                  + mount_build
                                  + [ tag_name ]
                                  + cmd))
 
+# Used by command_release.
 def run_build_image_install(platform: PlatformSpec, install_dir):
     config = platform.config
     tag_name = get_build_tag_name(platform)
