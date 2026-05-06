@@ -1,5 +1,6 @@
 FROM ricejasonf/cppdock:latest
-  COPY --from=ricejasonf/llvm-project-heavy /opt/install/ /opt/sysroot
+  COPY --from=ricejasonf/llvm-project-release /opt/install/ /opt/sysroot
+  COPY --from=ricejasonf/schir-project /opt/install/ /opt/sysroot
   # Make the libc++.so.1 and pals part of the system because why not.
   RUN mv /usr/local/lib/x86_64-unknown-linux-gnu/* /usr/local/lib && \
       rmdir /usr/local/lib/x86_64-unknown-linux-gnu

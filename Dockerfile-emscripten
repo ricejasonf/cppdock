@@ -1,9 +1,9 @@
 FROM ricejasonf/cppdock:linux_x64 AS base_image
   RUN apt-get update -yq && apt-get install -yq nodejs npm
 
-FROM base_image AS build_binaryen
+FROM ricejasonf/cppdock:linux_x64 AS build_binaryen
   WORKDIR /opt/src
-  RUN git clone --depth=1 --branch version_125 \
+  RUN git clone --depth=1 --branch version_129 \
     https://github.com/WebAssembly/binaryen.git
   WORKDIR /opt/build
   RUN cmake -DCMAKE_TOOLCHAIN_FILE=/opt/cppdock/toolchains/linux_x64.cmake \
@@ -14,7 +14,7 @@ FROM base_image AS build_binaryen
 
 FROM base_image AS build_emscripten
   WORKDIR /opt/src
-  RUN git clone --depth=1 --branch 4.0.20 \
+  RUN git clone --depth=1 --branch 5.0.7 \
     https://github.com/emscripten-core/emscripten
   WORKDIR /opt/src/emscripten
   RUN ./tools/maint/create_entry_points.py && \
@@ -28,8 +28,10 @@ FROM base_image
   COPY --from=build_emscripten /opt/install/ /usr/local
   WORKDIR /usr/local/emscripten
   RUN ./emcc --generate-config && ./emcc --check && ./embuilder.py build MINIMAL
-  # Copy heavy-scheme libraries
-  COPY --from=base_image /opt/sysroot/include/heavy/*.sld ./cache/sysroot/include/heavy/
-  COPY --from=base_image /opt/sysroot/include/heavy/base/*.sld ./cache/sysroot/include/heavy/base/
+
+  # Copy schir-scheme libraries
+  COPY --from=base_image /opt/sysroot/include/schir/*.sld ./cache/sysroot/include/schir/
+  COPY --from=base_image /opt/sysroot/include/schir/base/*.sld ./cache/sysroot/include/schir/base/
+
   RUN ln -snf /usr/local/emscripten/cache/sysroot/ /opt/sysroot
   ENV EMSCRIPTEN_ROOT=/usr/local/emscripten

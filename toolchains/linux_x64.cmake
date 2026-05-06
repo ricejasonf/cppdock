@@ -12,7 +12,8 @@ set(CMAKE_FIND_ROOT_PATH "/opt/sysroot" CACHE STRING "" FORCE)
 #include_directories("/opt/sysroot/include/c++/v1")
 
 # Dynamic linking stuff
-set(CMAKE_EXE_LINKER_FLAGS "-Wl,--rpath=/usr/local/lib" CACHE STRING "" FORCE)
+set(CMAKE_EXE_LINKER_FLAGS "-Wl,--rpath=/usr/local/lib -L/usr/local/lib" CACHE STRING "" FORCE)
+set(CMAKE_SHARED_LINKER_FLAGS_INIT "-L/usr/local/lib")
 
 # Compiler Features
 set(CMAKE_C_COMPILE_FEATURES "c_std_90;c_function_prototypes;c_std_99;c_restrict;c_variadic_macros;c_std_11;c_static_assert")
