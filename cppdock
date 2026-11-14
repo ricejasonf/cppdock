@@ -120,8 +120,17 @@ class DockerDepSpec(DepSpec):
         # be specified by "{name}:{tag}".
         self.revision: str
 
+        # Registry to pull the image from (default: cppdock.default_registry)
+        self.registry: Optional[str] = None
+
         super().__init__(platform, obj)
         self.revision = obj['revision']
+        check_dep_image_name(self.name)
+
+    # Get the image name qualified with its registry.
+    def get_image_name(self) -> str:
+        registry = self.registry or self.platform.config.default_registry
+        return qualify_image_name(self.name, registry)
 
     def get_build_stage_spec(self):
         assert self.revision is not None
@@ -349,8 +358,10 @@ class Config(SpecBase):
         # Support specifying remote machines to build on.
         # TODO Make MachineSpec for elements of this.
         self.machine_list: List[Any] = []
-        # Local Docker registry to use
-        self.registry: str = '127.0.0.1:5000'
+        # Registry for image names that do not name one
+        self.default_registry: str = 'docker.io'
+        # Local Docker registry for dev cluster images
+        self.dev_registry: str = '127.0.0.1:5000'
         # Docker compose service defaults (e.g. domain_name)
         self.service_defaults: JsonDict = {}
         # Top level secrets for docker compose
@@ -374,15 +385,25 @@ def require_docker(feature: str):
                  f'(the container engine is "{container_engine}"). '
                  'Set CPPDOCK_ENGINE=docker to use it.')
 
-# Prefix a namespaced image name that has no registry with Docker Hub.
-def qualify_image_name(name: str) -> str:
+# Check if an image name starts with a registry host.
+def has_registry_host(name: str) -> bool:
     parts = name.split('/')
     if len(parts) < 2:
-        return name
+        return False
     host = parts[0]
-    if '.' in host or ':' in host or host == 'localhost':
+    return '.' in host or ':' in host or host == 'localhost'
+
+# Prefix a namespaced image name that has no registry with `registry`.
+def qualify_image_name(name: str, registry: str = 'docker.io') -> str:
+    if '/' not in name or has_registry_host(name):
         return name
-    return 'docker.io/' + name
+    return registry + '/' + name
+
+# Reject a docker dep name with a registry host; use "registry" instead.
+def check_dep_image_name(name: str):
+    if has_registry_host(name):
+        raise ValueError(f'Docker dep "{name}" names a registry; '
+                         'use the "registry" property instead')
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -671,7 +692,7 @@ def command_release(args):
     platform = config.platforms[args.platform]
     tag_name = args.tag or platform.push_tag
     if tag_name:
-        tag_name = qualify_image_name(tag_name)
+        tag_name = qualify_image_name(tag_name, config.default_registry)
 
     # Check that there are no mounted deps.
     check_deps_for_release(platform)
@@ -1045,6 +1066,8 @@ def merge_platform_config(platform_name, base_config, config_obj):
 def lock_config_file_deps(config_obj):
     if 'platforms' not in config_obj:
         return config_obj
+    default_registry = config_obj['cppdock'].get('default_registry',
+                                                 'docker.io')
     for platform, settings in config_obj['platforms'].items():
         check_base_image_conflict(settings)
 
@@ -1052,17 +1075,17 @@ def lock_config_file_deps(config_obj):
             if not isinstance(stage, list):
                 raise ValueError("Each stage in 'deps' must be an array.")
             for item in stage:
-                item = lock_item_json(item)
+                item = lock_item_json(item, default_registry)
 
     return config_obj
 
-def lock_item_json(item):
-    current_sha = get_current_sha_with_comment(item)
+def lock_item_json(item, default_registry):
+    current_sha = get_current_sha_with_comment(item, default_registry)
     item.update(revision = current_sha)
 
     return item
 
-def get_current_sha_with_comment(item):
+def get_current_sha_with_comment(item, default_registry):
     repo = item['name']
     tag = item.get('tag')
     source = item.get('type', (item.get('source')))
@@ -1072,7 +1095,9 @@ def get_current_sha_with_comment(item):
     else:
         if source == 'docker':
             tag = tag or 'latest'
-            repo_tag = qualify_image_name(repo + ":" + tag)
+            check_dep_image_name(repo)
+            registry = item.get('registry') or default_registry
+            repo_tag = qualify_image_name(repo + ":" + tag, registry)
 
             try:
                 # pull the image from the registry to get the RepoDigest
@@ -1128,8 +1153,11 @@ def get_user_base_tag_name(platform: PlatformSpec) -> str:
         return platform.base_image or get_base_tag_name(platform)
 
 def get_base_image_dockerfile_data(platform: PlatformSpec):
-    tag_name = qualify_image_name(get_user_base_tag_name(platform))
-    cppdock_tag_name = qualify_image_name(platform.config.cppdock_image)
+    default_registry = platform.config.default_registry
+    tag_name = qualify_image_name(get_user_base_tag_name(platform),
+                                  default_registry)
+    cppdock_tag_name = qualify_image_name(platform.config.cppdock_image,
+                                          default_registry)
 
     return """
 FROM {tag_name}
@@ -1243,7 +1271,7 @@ def make_docker_image_remote(machine_name, tag_name, dockerfile_data, context_di
 
 def push_docker_image(config: Config, tag_name):
     # tags with registry and pushes
-    registry = config.registry
+    registry = config.dev_registry
     rtag_name = registry + '/' + tag_name
     print("Pushing {}".format(rtag_name))
     subprocess.check_output(['docker', 'tag', tag_name, rtag_name])
@@ -1328,7 +1356,7 @@ def get_stage_docker_image_digest(stage_deps: List[DepSpec]):
     if len(stage_deps) == 1:
         for dep in stage_deps:
             if isinstance(dep, DockerDepSpec):
-                repo_name = qualify_image_name(dep.name)
+                repo_name = dep.get_image_name()
                 revision = dep.revision
                 return f'{repo_name}@{revision}'
     return None
@@ -1339,7 +1367,7 @@ def make_install_dep(platform: PlatformSpec, dep: DepSpec):
     revision = dep.revision
     repo_name = dep.name
     if isinstance(dep, DockerDepSpec):
-        repo_name = qualify_image_name(repo_name)
+        repo_name = dep.get_image_name()
         revision = dep.revision
         dest_dir = platform.dest_dir;
         return f"""
@@ -1491,7 +1519,8 @@ def clean_install_files(platform: PlatformSpec, install_dir):
     # because the cppdock user wont have to permissions
     if not os.path.isdir(install_dir):
         return
-    base_image = qualify_image_name(platform.config.cppdock_image)
+    base_image = qualify_image_name(platform.config.cppdock_image,
+                                    platform.config.default_registry)
     assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
     cmd = ['/bin/bash', '-c', 'rm -rf /opt/install/*']
     mount_install = get_run_options_mount_install(platform, install_dir)
@@ -2094,7 +2123,7 @@ def get_secret_files():
     return secrets
 
 def get_registry_tag(config: Config, tag_name):
-    return config.registry + '/' + tag_name
+    return config.dev_registry + '/' + tag_name
 
 def get_build_type(platform: PlatformSpec):
     return platform.build_type or platform.config.default_build_type

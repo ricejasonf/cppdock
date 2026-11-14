@@ -16,7 +16,7 @@ CppDock runs `podman` by default. Set `CPPDOCK_ENGINE=docker` to use Docker inst
 
 The `dev_cluster`, `dev_registry` and `cluster_*` commands, and configs that list `machines`, rely on Docker Swarm and `docker-machine`, so they exit with an error unless the engine is `docker`.
 
-Image names with a namespace and no registry, such as `ricejasonf/cppdock`, are treated as Docker Hub names (`docker.io/ricejasonf/cppdock`) with either engine.
+Image names with a namespace and no registry, such as `ricejasonf/cppdock`, get the registry in `cppdock.default_registry`, which defaults to `docker.io` (so `docker.io/ricejasonf/cppdock`), with either engine. A docker dep names its registry with its own `registry` property instead of in its `name`; a dep name that starts with a registry host is an error. The swarm registry used by `dev_cluster` is `cppdock.dev_registry`.
 
 ### Lock Library Dependencies to Specific Revisions Automatically
 

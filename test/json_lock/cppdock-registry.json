@@ -1,0 +1,26 @@
+{
+  "cppdock": {
+    "name": "test_json_lock_registry",
+    "default_registry": "registry.example.com"
+  },
+  "platforms": {
+    "main": {
+      "type": "linux_x64",
+      "deps": [
+        [
+          {
+            "name": "ricejasonf/a",
+            "type": "docker"
+          }
+        ],
+        [
+          {
+            "name": "ricejasonf/b",
+            "type": "docker",
+            "registry": "localhost"
+          }
+        ]
+      ]
+    }
+  }
+}
