@@ -49,7 +49,7 @@ class DepSpec(SpecBase):
     @staticmethod
     def create(platform: 'PlatformSpec', dep: JsonDict):
         if 'type' not in dep and 'source' in dep:
-            warnings.warn('"source" property for dep is deprecated.'
+            warnings.warn('"source" property for dep is deprecated. '
                           'use "type" instead',
                           DeprecationWarning)
             dep['type'] = dep['source']
@@ -186,8 +186,8 @@ class PlatformSpec(SpecBase):
         # (which copies to /opt/init_service)
         self.service_init_script: str = '/opt/cppdock/recipes/default'
         self.dev_service_target: str = 'check'
-        self.service_cmd: List[str] = ['cmake', '--build', '/opt/build'
-                                  '--self.target', "check"]
+        self.service_cmd: List[str] = ['cmake', '--build', '/opt/build',
+                                  '--target', 'check']
         # Location to copy from /opt/install
         self.dest_dir: str = "/opt/sysroot"
         # Name of docker tag to use when pushing release image.
@@ -415,7 +415,7 @@ def get_commands():
     }
 
 def get_subcommands():
-    return filter(lambda x: not x.startswith('_'), get_commands().keys())
+    return [x for x in get_commands().keys() if not x.startswith('_')]
 
 def parse_args_command(args):
     parser = argparse.ArgumentParser(add_help=False)
@@ -614,7 +614,7 @@ def command_complete(args_str):
     if args_str.endswith(' '):
         args.append('')
     # filter out completed options
-    args = filter(lambda x: not x.startswith('-'), args[:-1]) + [args[-1]]
+    args = [x for x in args[:-1] if not x.startswith('-')] + [args[-1]]
     length = len(args)
 
     if length < 2:
@@ -634,7 +634,7 @@ def command_complete(args_str):
         if subcommand in ['build', 'dev', 'release']:
             completion = args[2]
             config = load_config_file(default_json_file_path)
-            candidates = get_all_platforms(config)
+            candidates = list(config.platforms.keys())
         if subcommand == 'clean':
             completion = args[2]
             candidates = ['all', 'build', 'install', 'release']
@@ -643,9 +643,9 @@ def command_complete(args_str):
         if subcommand in ['clean']:
             completion = args[3]
             config = load_config_file(default_json_file_path)
-            candidates = get_all_platforms(config)
+            candidates = list(config.platforms.keys())
 
-    candidates = filter(lambda x: x.startswith(completion), candidates)
+    candidates = [x for x in candidates if x.startswith(completion)]
     print(' '.join(candidates))
 
 def command_init(args):
@@ -677,7 +677,7 @@ def command_release(args):
     check_deps_for_release(platform)
 
     if tag_name is None or len(tag_name) == 0:
-        raise StandardError(
+        raise ValueError(
                 'Platform "push_tag" property or cli "--tag" must be set')
 
     make_build_image(platform, print_only)
@@ -729,7 +729,7 @@ def make_release_image(platform: PlatformSpec, context_dir):
     return release_tag_name
 
 def make_release_dockerfile(platform: PlatformSpec, build_image):
-    base_image = "ubuntu:bionic" # TODO use config or something
+    base_image = "scratch"
 
     return """
 FROM {base_image}
@@ -1050,7 +1050,7 @@ def lock_config_file_deps(config_obj):
 
         for stage in settings.get('deps', []):
             if not isinstance(stage, list):
-                raise "Each stage in 'deps' must be an array."
+                raise ValueError("Each stage in 'deps' must be an array.")
             for item in stage:
                 item = lock_item_json(item)
 
@@ -1110,7 +1110,7 @@ def normalize_branch_name(name):
 
 def check_base_image_conflict(settings):
     if 'base_image' in settings and 'base_image_dockerfile' in settings:
-        raise StandardError("Conflicting base image settings detected")
+        raise ValueError("Conflicting base image settings detected")
 
 def make_archive_url(repo, branch):
     return 'https://github.com/{0}/archive/{1}.zip'.format(repo, branch)
@@ -1199,7 +1199,7 @@ def check_sysroot():
         assert os.path.isdir('/opt/sysroot/')
 
 def get_arg(args, i):
-    next(iter(args[i:i+1]), None)
+    return next(iter(args[i:i+1]), None)
 
 def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
     if print_only:
@@ -1366,10 +1366,10 @@ def make_install_dep(platform: PlatformSpec, dep: DepSpec):
     copy_local_toolchain = ''
     if dep.toolchain_file is not None:
         if dep.toolchain_file.startswith('/opt/'):
-            copy_local_recipe = """
+            copy_local_toolchain = """
     RUN cp {} /opt/toolchain.cmake""".format(dep.toolchain_file)
         else:
-            copy_local_recipe = """
+            copy_local_toolchain = """
     COPY {} /opt/toolchain.cmake""".format(dep.toolchain_file)
 
     return """{3}
@@ -1982,7 +1982,7 @@ def get_service_nginx_proxy(platform: NginxProxySpec):
     assert domain, 'Nginx proxy requires a domain name'
     platform_name = platform.name
     service_name_fn = lambda plat : get_service_name(plat)
-    service_names = map(service_name_fn, get_all_platforms(config))
+    service_names = list(map(service_name_fn, get_all_platforms(config)))
     tag_name = get_image_tag_name(platform, 'service')
     tag_name = get_registry_tag(config, tag_name)
     volume_name = platform.volume_name
@@ -2227,7 +2227,7 @@ def machine_create_all(config: Config):
 
     machine_create_master(*(xs[0]))
     def join_new(name, values):
-        join_token = machine_join_token(name_values)
+        join_token = machine_join_token(name, values)
         machine_create(name, values, join_token)
 
     [join_new(name, values) for (name, values) in xs[1:]]

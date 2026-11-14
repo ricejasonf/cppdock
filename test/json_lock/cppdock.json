@@ -9,8 +9,7 @@
         [
           {
             "tag": "master",
-            "name": "ricejasonf/nbdl",
-            "revision": "1ae8497b57640cfb095efe0a3c9e0f22f3ac15a9"
+            "name": "ricejasonf/nbdl"
           }
         ],
         [
@@ -24,7 +23,7 @@
           {
             "tag": "latest",
             "name": "ricejasonf/cppdock",
-            "source": "docker"
+            "type": "docker"
           }
         ]
       ]
@@ -36,8 +35,7 @@
         [
           {
             "tag": "develop",
-            "name": "ricejasonf/nbdl",
-            "revision": "157988d3266cc4ef84a2687b6ef9cdba992449ae"
+            "name": "ricejasonf/nbdl"
           }
         ],
         [
