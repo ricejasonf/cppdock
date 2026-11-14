@@ -10,6 +10,14 @@ CppDock is just a tiny python script that uses a JSON config file to specify pro
 
 In the simple `my_app` example, running `cppdock build linux_x64` will create a Docker image called `my_app_deps:linux_64`.
 
+### Container Engine
+
+CppDock runs `podman` by default. Set `CPPDOCK_ENGINE=docker` to use Docker instead; the `Makefile` reads the same variable.
+
+The `dev_cluster`, `dev_registry` and `cluster_*` commands, and configs that list `machines`, rely on Docker Swarm and `docker-machine`, so they exit with an error unless the engine is `docker`.
+
+Image names with a namespace and no registry, such as `ricejasonf/cppdock`, are treated as Docker Hub names (`docker.io/ricejasonf/cppdock`) with either engine.
+
 ### Lock Library Dependencies to Specific Revisions Automatically
 
 In a local `cppdock.json` file you can specify repos of libraries and cppdock automatically sets the SHA of the revision so there are no unexpected changes.

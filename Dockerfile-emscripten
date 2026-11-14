@@ -1,7 +1,7 @@
-FROM ricejasonf/cppdock:linux_x64 AS base_image
+FROM docker.io/ricejasonf/cppdock:linux_x64 AS base_image
   RUN apt-get update -yq && apt-get install -yq nodejs npm
 
-FROM ricejasonf/cppdock:linux_x64 AS build_binaryen
+FROM docker.io/ricejasonf/cppdock:linux_x64 AS build_binaryen
   WORKDIR /opt/src
   RUN git clone --depth=1 --branch version_129 \
     https://github.com/WebAssembly/binaryen.git

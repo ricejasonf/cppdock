@@ -25,6 +25,8 @@ root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
 default_dep_path = "https://github.com/"
 noop = lambda *x: None
+# Name the container engine command (podman or docker.)
+container_engine = os.environ.get('CPPDOCK_ENGINE', 'podman')
 
 type JsonDict = dict[str, Any]
 
@@ -365,6 +367,23 @@ class Config(SpecBase):
                     self, platform_name, platform_obj)
         self.machine_list = get_machine_list(self.orig_obj)
 
+# Exit with an error unless the container engine is docker.
+def require_docker(feature: str):
+    if container_engine != 'docker':
+        sys.exit(f'cppdock: {feature} requires docker '
+                 f'(the container engine is "{container_engine}"). '
+                 'Set CPPDOCK_ENGINE=docker to use it.')
+
+# Prefix a namespaced image name that has no registry with Docker Hub.
+def qualify_image_name(name: str) -> str:
+    parts = name.split('/')
+    if len(parts) < 2:
+        return name
+    host = parts[0]
+    if '.' in host or ':' in host or host == 'localhost':
+        return name
+    return 'docker.io/' + name
+
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
     return type(obj)(remove_none(x) for x in obj if x is not None)
@@ -651,6 +670,8 @@ def command_release(args):
 
     platform = config.platforms[args.platform]
     tag_name = args.tag or platform.push_tag
+    if tag_name:
+        tag_name = qualify_image_name(tag_name)
 
     # Check that there are no mounted deps.
     check_deps_for_release(platform)
@@ -666,10 +687,10 @@ def command_release(args):
     image_name = get_release_tag_name(platform)
     if tag_name:
         print(f'Tagging image {image_name}: {tag_name}')
-        subprocess.check_output(['docker', 'tag', image_name, tag_name])
+        subprocess.check_output([container_engine, 'tag', image_name, tag_name])
     if tag_name and args.push:
         print(f'Pushing release with tag: {tag_name}')
-        subprocess.check_output(['docker', 'push', tag_name])
+        subprocess.check_output([container_engine, 'push', tag_name])
     elif tag_name:
         print(f"Skipping push: {tag_name}")
     else:
@@ -757,6 +778,7 @@ def command_dev(args):
                     args.shell_only, args.privileged, ports_arg)
 
 def command_dev_cluster(args):
+    require_docker('`dev_cluster`')
     config = load_config_file_with_args(args)
     set_master_machine(config)
 
@@ -795,6 +817,7 @@ def command_dev_cluster(args):
         dev_service_name = subprocess.check_output(['docker', 'ps', '-q', '-f name=servicename'])
 
 def command_dev_registry(args):
+    require_docker('`dev_registry`')
     config      = load_config_file_with_args(args)
     set_master_machine(config)
 
@@ -871,24 +894,29 @@ def command_init_dev_service(args):
         sys.exit(p.returncode)
 
 def command_cluster_build(args):
+    require_docker('`cluster_build`')
     config = load_config_file_with_args(args)
     machine_create_all(config)
     cluster_sync_source_init(config)
     cluster_sync_source(config)
 
 def command_cluster_sync(args):
+    require_docker('`cluster_sync`')
     config = load_config_file_with_args(args)
     cluster_sync_source(config)
 
 def command_cluster_start(args):
+    require_docker('`cluster_start`')
     config = load_config_file_with_args(args)
     machine_start_all(config)
 
 def command_cluster_stop(args):
+    require_docker('`cluster_stop`')
     config = load_config_file_with_args(args)
     machine_stop_all(config)
 
 def command_cluster_rm(args):
+    require_docker('`cluster_rm`')
     config = load_config_file_with_args(args)
     machine_rm_all(config)
 
@@ -910,7 +938,7 @@ def command_clean(args):
                 remove_install_dir(config, install_dir)
             elif clean_type == 'build':
                 # remove the build volume
-                subprocess.check_output(['docker', 'volume', 'rm', '--force',
+                subprocess.check_output([container_engine, 'volume', 'rm', '--force',
                         platform.get_volume_name('release'),
                         platform.get_volume_name('debug')])
             elif clean_type == 'images':
@@ -918,7 +946,7 @@ def command_clean(args):
                 tag_names = [get_build_tag_name(platform),
                              get_base_tag_name(platform),
                              get_release_tag_name(platform)]
-                subprocess.check_output(['docker', 'image', 'rm', '--force',
+                subprocess.check_output([container_engine, 'image', 'rm', '--force',
                                          get_build_tag_name(platform),
                                          get_base_tag_name(platform),
                                          get_release_tag_name(platform)])
@@ -1044,16 +1072,17 @@ def get_current_sha_with_comment(item):
     else:
         if source == 'docker':
             tag = tag or 'latest'
-            repo_tag = repo + ":" + tag
+            repo_tag = qualify_image_name(repo + ":" + tag)
 
             try:
                 # pull the image from the registry to get the RepoDigest
-                subprocess.check_output(['docker', 'pull', repo_tag])
+                subprocess.check_output([container_engine, 'pull', repo_tag])
             except:
                 raise RuntimeError("Unable to pull docker image from registry: " + repo_tag )
 
             try:
-                inspect_result =  subprocess.check_output(['docker', 'inspect', repo_tag])
+                inspect_result =  subprocess.check_output(
+                        [container_engine, 'image', 'inspect', repo_tag])
                 digest = json.loads(inspect_result)[0]['RepoDigests'][0].split('@')[1]
             except:
                 raise RuntimeError("Unable to get SHA from docker image")
@@ -1099,8 +1128,8 @@ def get_user_base_tag_name(platform: PlatformSpec) -> str:
         return platform.base_image or get_base_tag_name(platform)
 
 def get_base_image_dockerfile_data(platform: PlatformSpec):
-    tag_name = get_user_base_tag_name(platform)
-    cppdock_tag_name = platform.config.cppdock_image
+    tag_name = qualify_image_name(get_user_base_tag_name(platform))
+    cppdock_tag_name = qualify_image_name(platform.config.cppdock_image)
 
     return """
 FROM {tag_name}
@@ -1177,8 +1206,9 @@ def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir
         print('###### Docker Image: ' + tag_name + ' ######')
         print(dockerfile_data)
         return
-    p = subprocess.Popen(['docker', 'buildx', 'build', '--tag=' + tag_name,
-                          '--file=-', context_dir], stdin=subprocess.PIPE)
+    p = subprocess.Popen([container_engine, 'buildx', 'build',
+                          '--tag=' + tag_name, '--file=-', context_dir],
+                         stdin=subprocess.PIPE)
     out, err = p.communicate(bytes(dockerfile_data, 'utf-8'))
     if p.returncode == 0:
         print("Finished building {0}.".format(tag_name))
@@ -1298,7 +1328,7 @@ def get_stage_docker_image_digest(stage_deps: List[DepSpec]):
     if len(stage_deps) == 1:
         for dep in stage_deps:
             if isinstance(dep, DockerDepSpec):
-                repo_name = dep.name
+                repo_name = qualify_image_name(dep.name)
                 revision = dep.revision
                 return f'{repo_name}@{revision}'
     return None
@@ -1309,6 +1339,7 @@ def make_install_dep(platform: PlatformSpec, dep: DepSpec):
     revision = dep.revision
     repo_name = dep.name
     if isinstance(dep, DockerDepSpec):
+        repo_name = qualify_image_name(repo_name)
         revision = dep.revision
         dest_dir = platform.dest_dir;
         return f"""
@@ -1390,7 +1421,7 @@ def run_build_image(platform: PlatformSpec, target,
     dep_mounts = [dep.create_mount_option(index)
                   for index, dep in platform.enumerate_deps()]
 
-    subprocess.call(remove_none(['docker', 'run', '--rm', '-it', ports_arg, privileged_op]
+    subprocess.call(remove_none([container_engine, 'run', '--rm', '-it', ports_arg, privileged_op]
                                  + mount_src
                                  + mount_build
                                  + [ tag_name ]
@@ -1409,7 +1440,7 @@ def run_build_image_install(platform: PlatformSpec, install_dir):
     mount_build = get_run_options_mount_build(platform)
     mount_src = get_run_options_mount_source(config)
     mount_install = get_run_options_mount_install(platform, install_dir)
-    returncode = subprocess.call(remove_none(['docker', 'run', '--rm']
+    returncode = subprocess.call(remove_none([container_engine, 'run', '--rm']
                                  + mount_src
                                  + mount_build
                                  + mount_install
@@ -1460,11 +1491,11 @@ def clean_install_files(platform: PlatformSpec, install_dir):
     # because the cppdock user wont have to permissions
     if not os.path.isdir(install_dir):
         return
-    base_image = platform.config.cppdock_image
+    base_image = qualify_image_name(platform.config.cppdock_image)
     assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
     cmd = ['/bin/bash', '-c', 'rm -rf /opt/install/*']
     mount_install = get_run_options_mount_install(platform, install_dir)
-    cmd = remove_none(['docker', 'run', '--rm']
+    cmd = remove_none([container_engine, 'run', '--rm']
                       + mount_install
                       + [ base_image ]
                       + cmd)
@@ -2140,6 +2171,7 @@ def for_every_machine(config: Config, fn):
 def set_master_machine(config: Config):
     machines = config.machine_list
     if len(machines) > 0:
+        require_docker('cluster mode ("machines" in the config)')
         set_machine(*(machines[0]))
 
 def get_master_machine_name(config: Config):

@@ -1,39 +1,42 @@
+# Name the container engine command (podman or docker.)
+CPPDOCK_ENGINE ?= podman
+
 .PHONY: platforms cppdock platform_linux_x64 platform_emscripten boost platform_tvossimulator
 
 cppdock:
-	docker build --force-rm=true -t ricejasonf/cppdock .
+	$(CPPDOCK_ENGINE) build --force-rm=true -t docker.io/ricejasonf/cppdock .
 
 platforms: cppdock platform_linux_x64 platform_emscripten
 
 platform_linux_x64: cppdock
-	docker build --force-rm=true -f ./Dockerfile-linux_x64 -t ricejasonf/cppdock:linux_x64 .
+	$(CPPDOCK_ENGINE) build --force-rm=true -f ./Dockerfile-linux_x64 -t docker.io/ricejasonf/cppdock:linux_x64 .
 
 platform_emscripten: platform_linux_x64
-	docker build --force-rm=true -f ./Dockerfile-emscripten -t ricejasonf/cppdock:emscripten .
+	$(CPPDOCK_ENGINE) build --force-rm=true -f ./Dockerfile-emscripten -t docker.io/ricejasonf/cppdock:emscripten .
 
 platform_tvossimulator:
-	docker build --force-rm=true -f ./Dockerfile-tvossimulator -t ricejasonf/cppdock:tvossimulator .
+	$(CPPDOCK_ENGINE) build --force-rm=true -f ./Dockerfile-tvossimulator -t docker.io/ricejasonf/cppdock:tvossimulator .
 
 platform_macosx:
-	docker build --force-rm=true -f ./Dockerfile-macosx -t ricejasonf/cppdock:macosx .
+	$(CPPDOCK_ENGINE) build --force-rm=true -f ./Dockerfile-macosx -t docker.io/ricejasonf/cppdock:macosx .
 
 temp:
-	docker build --force-rm=true -f ./Dockerfile-temp -t ricejasonf/cppdock:temp .
+	$(CPPDOCK_ENGINE) build --force-rm=true -f ./Dockerfile-temp -t docker.io/ricejasonf/cppdock:temp .
 
 install:
 	cp ./cppdock /usr/local/bin/
 
 push: cppdock platforms boost
-	docker push ricejasonf/cppdock && \
-	docker push ricejasonf/cppdock:linux_x64 && \
-	docker push ricejasonf/cppdock:emscripten && \
-	docker push ricejasonf/boost:1_85_0 && \
-	docker push ricejasonf/boost_header_only:1_85_0
+	$(CPPDOCK_ENGINE) push docker.io/ricejasonf/cppdock && \
+	$(CPPDOCK_ENGINE) push docker.io/ricejasonf/cppdock:linux_x64 && \
+	$(CPPDOCK_ENGINE) push docker.io/ricejasonf/cppdock:emscripten && \
+	$(CPPDOCK_ENGINE) push docker.io/ricejasonf/boost:1_85_0 && \
+	$(CPPDOCK_ENGINE) push docker.io/ricejasonf/boost_header_only:1_85_0
 
 # Prebuild dependencies.
 boost:
-	docker buildx build . -f ./recipes_docker/Dockerfile-boost --tag ricejasonf/boost:1_85_0 \
+	$(CPPDOCK_ENGINE) buildx build . -f ./recipes_docker/Dockerfile-boost --tag docker.io/ricejasonf/boost:1_85_0 \
 		--target=boost && \
-	docker buildx build . -f ./recipes_docker/Dockerfile-boost --tag ricejasonf/boost_header_only:1_85_0 \
+	$(CPPDOCK_ENGINE) buildx build . -f ./recipes_docker/Dockerfile-boost --tag docker.io/ricejasonf/boost_header_only:1_85_0 \
 		--target=boost_header_only
 
