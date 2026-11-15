@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-# Test that `cppdock init` locks every dep in cppdock.json.
+# Test that `cppdock init` locks every dep in cppdock.json and that
+# `cppdock build` fetches and verifies locked docker deps.
 #
 # Run offline: fake `git` and `podman` commands on PATH stand in for
-# `git ls-remote` and the image registry.
+# `git ls-remote`, the local image store and the image registry.
 
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,17 +26,51 @@ echo "{nbdl_master_revision}\trefs/heads/master"
 echo "{nbdl_develop_revision}\trefs/heads/develop"
 """
 
-fake_podman = """#!/bin/sh
-# Answer `pull` and `image inspect` with a digest of the image reference.
-[ "$1" = pull ] && exit 0
-[ "$1 $2" = "image inspect" ] || exit 1
-digest=$(printf %s "$3" | sha256sum | cut -d' ' -f1)
-echo "[{\\"RepoDigests\\": [\\"$3@sha256:$digest\\"]}]"
+# Model the image store and the registry as directories of image inspect
+# objects named by image reference, and log every command.
+fake_podman = """#!/usr/bin/env python3
+import json, os, shutil, sys
+state = os.environ['FAKE_ENGINE_STATE']
+local, remote = os.path.join(state, 'local'), os.path.join(state, 'remote')
+def path(store, ref):
+    return os.path.join(store, ref.replace('/', '%'))
+args = sys.argv[1:]
+with open(os.path.join(state, 'log'), 'a') as fh:
+    fh.write(' '.join(args) + '\\n')
+match args:
+    case ['image', 'inspect', ref]:
+        if not os.path.exists(path(local, ref)):
+            sys.exit(1)
+        with open(path(local, ref)) as fh:
+            print(json.dumps([json.load(fh)]))
+    case ['pull', ref]:
+        if not os.path.exists(path(remote, ref)):
+            sys.exit(1)
+        shutil.copy(path(remote, ref), path(local, ref))
+    case ['tag', src, dst]:
+        shutil.copy(path(local, src), path(local, dst))
+    case ['buildx', 'build', *_]:
+        with open(os.path.join(state, 'dockerfiles'), 'a') as fh:
+            fh.write(sys.stdin.read())
+    case _:
+        sys.exit(1)
 """
 
-# Get the digest the fake podman reports for an image reference.
-def image_digest(image_ref):
-    return 'sha256:' + hashlib.sha256(image_ref.encode()).hexdigest()
+def layers_of(name):
+    return ['sha256:' + hashlib.sha256(name.encode()).hexdigest()]
+
+# Get the layers lock cppdock should compute for `layers`.
+def layers_lock(layers):
+    data = ''.join(layer + '\n' for layer in layers)
+    return 'layers:sha256:' + hashlib.sha256(data.encode()).hexdigest()
+
+def lock_tag(image_name, layers):
+    return image_name + ':layers-sha256-' + layers_lock(layers).split(':')[2]
+
+# Make an inspect object with the digest of its manifest, if any.
+def image(image_name, layers, digest = None):
+    return {'RootFS': {'Layers': layers}, 'Digest': digest,
+            'RepoDigests': [f'{image_name}@{digest}'] if digest else []}
 
 def write_script(path, text):
     with open(path, 'w') as fh:
@@ -48,11 +82,22 @@ def check(cond, message):
         print('FAILURE: ' + message)
         sys.exit(1)
 
-# Run `cppdock init` on a copy of `config_obj`; return its exit code and result.
-def run_init(config_obj):
+class Result:
+    pass
+
+# Run cppdock `args` on a copy of `config_obj` with images in the fake
+# `local` and `remote` stores ({ref: inspect object}).
+def run_cppdock(args, config_obj, local = {}, remote = {}):
     with tempfile.TemporaryDirectory() as work_dir:
         bin_dir = os.path.join(work_dir, 'bin')
+        state_dir = os.path.join(work_dir, 'state')
         os.mkdir(bin_dir)
+        for store, images in [('local', local), ('remote', remote)]:
+            os.makedirs(os.path.join(state_dir, store))
+            for ref, inspect in images.items():
+                with open(os.path.join(state_dir, store,
+                                       ref.replace('/', '%')), 'w') as fh:
+                    json.dump(inspect, fh)
         write_script(os.path.join(bin_dir, 'git'), fake_git)
         write_script(os.path.join(bin_dir, 'podman'), fake_podman)
         config_path = os.path.join(work_dir, 'cppdock.json')
@@ -61,22 +106,44 @@ def run_init(config_obj):
 
         env = dict(os.environ)
         env['PATH'] = bin_dir + os.pathsep + env['PATH']
+        env['FAKE_ENGINE_STATE'] = state_dir
         env.pop('CPPDOCK_ENGINE', None)
-        result = subprocess.run([sys.executable, cppdock_path, 'init'],
-                                cwd=work_dir, env=env,
-                                stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
+        process = subprocess.run([sys.executable, cppdock_path] + args,
+                                 cwd=work_dir, env=env,
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True)
+        result = Result()
+        result.returncode = process.returncode
+        result.output = process.stdout
         with open(config_path) as fh:
-            return result.returncode, json.load(fh)
+            result.config = json.load(fh)
+        result.local = set(ref.replace('%', '/') for ref in
+                           os.listdir(os.path.join(state_dir, 'local')))
+        def read(name):
+            path = os.path.join(state_dir, name)
+            return open(path).read() if os.path.exists(path) else ''
+        result.log = read('log').splitlines()
+        result.dockerfiles = read('dockerfiles')
+        return result
+
+def pulled(result):
+    return [line.split()[1] for line in result.log if line.startswith('pull')]
 
 def load_fixture(name):
     with open(os.path.join(test_dir, name)) as fh:
         return json.load(fh)
 
-def test_lock():
-    returncode, config = run_init(load_fixture('cppdock.json'))
-    check(returncode == 0, '`cppdock init` failed')
-    platforms = config['platforms']
+cppdock_image = 'docker.io/ricejasonf/cppdock'
+cppdock_layers = layers_of(cppdock_image)
+cppdock_digest = 'sha256:' + '3' * 64
+cppdock_lock_ref = lock_tag(cppdock_image, cppdock_layers)
+
+def test_lock_digest():
+    result = run_cppdock(['init'], load_fixture('cppdock.json'), remote = {
+        cppdock_image + ':latest':
+            image(cppdock_image, cppdock_layers, cppdock_digest)})
+    check(result.returncode == 0, '`cppdock init` failed')
+    platforms = result.config['platforms']
     linux_deps = platforms['my_linux_x64']['deps']
     emscripten_deps = platforms['my_emscripten']['deps']
     check(linux_deps[0][0]['revision'] == nbdl_master_revision,
@@ -86,28 +153,145 @@ def test_lock():
     check(linux_deps[1][0]['revision'] == hana_revision
           and emscripten_deps[1][0]['revision'] == hana_revision,
           'hard coded hana revision changed')
-    check(linux_deps[2][0]['revision']
-          == image_digest('docker.io/ricejasonf/cppdock:latest'),
-          'docker dep not locked to the docker.io image')
+    check(linux_deps[2][0]['revision'] == cppdock_digest,
+          'image without a lock tag not locked to its manifest digest')
+
+def test_lock_layers():
+    result = run_cppdock(['init'], load_fixture('cppdock.json'), remote = {
+        cppdock_image + ':latest':
+            image(cppdock_image, cppdock_layers, cppdock_digest),
+        cppdock_lock_ref:
+            image(cppdock_image, cppdock_layers, cppdock_digest)})
+    check(result.returncode == 0, '`cppdock init` failed with a lock tag')
+    deps = result.config['platforms']['my_linux_x64']['deps']
+    check(deps[2][0]['revision'] == layers_lock(cppdock_layers),
+          'image with a lock tag not locked to its layers')
+
+def test_lock_local():
+    local_layers = layers_of('local build')
+    local_image = image(cppdock_image, local_layers)
+    result = run_cppdock(['init'], load_fixture('cppdock.json'), local = {
+        cppdock_image + ':latest': local_image,
+        lock_tag(cppdock_image, local_layers): local_image},
+        remote = {cppdock_image + ':latest':
+            image(cppdock_image, cppdock_layers, cppdock_digest)})
+    check(result.returncode == 0, '`cppdock init` failed with a local image')
+    check(pulled(result) == [], '`cppdock init` pulled an image that is local')
+    deps = result.config['platforms']['my_linux_x64']['deps']
+    check(deps[2][0]['revision'] == layers_lock(local_layers),
+          'docker dep not locked to the local image')
+
+def test_lock_unreleased():
+    result = run_cppdock(['init'], load_fixture('cppdock.json'), local = {
+        cppdock_image + ':latest': image(cppdock_image, cppdock_layers)})
+    check(result.returncode != 0,
+          'local image with no lock tag and no digest was locked')
+
+def test_lock_stale_digest():
+    stale_digest = 'sha256:' + '4' * 64
+    result = run_cppdock(['init'], load_fixture('cppdock.json'), local = {
+        cppdock_image + ':latest':
+            image(cppdock_image, cppdock_layers, stale_digest)},
+        remote = {cppdock_image + ':latest':
+            image(cppdock_image, cppdock_layers, cppdock_digest)})
+    check(result.returncode == 0, '`cppdock init` failed with a local digest')
+    deps = result.config['platforms']['my_linux_x64']['deps']
+    check(deps[2][0]['revision'] == cppdock_digest,
+          'docker dep locked to a digest the registry does not have')
 
 def test_registry():
-    returncode, config = run_init(load_fixture('cppdock-registry.json'))
-    check(returncode == 0, '`cppdock init` failed with registries')
-    deps = config['platforms']['main']['deps']
-    check(deps[0][0]['revision']
-          == image_digest('registry.example.com/ricejasonf/a:latest'),
+    a_image = 'registry.example.com/ricejasonf/a'
+    b_image = 'localhost/ricejasonf/b'
+    a_digest = 'sha256:' + 'a' * 64
+    b_digest = 'sha256:' + 'b' * 64
+    result = run_cppdock(['init'], load_fixture('cppdock-registry.json'),
+        remote = {a_image + ':latest': image(a_image, ['a'], a_digest),
+                  b_image + ':latest': image(b_image, ['b'], b_digest)})
+    check(result.returncode == 0, '`cppdock init` failed with registries')
+    deps = result.config['platforms']['main']['deps']
+    check(deps[0][0]['revision'] == a_digest,
           'docker dep not locked to the default_registry image')
-    check(deps[1][0]['revision']
-          == image_digest('localhost/ricejasonf/b:latest'),
+    check(deps[1][0]['revision'] == b_digest,
           'docker dep not locked to its own registry image')
 
 def test_registry_in_name():
     config = load_fixture('cppdock-registry.json')
     config['platforms']['main']['deps'][0][0]['name'] = 'ghcr.io/ricejasonf/a'
-    returncode, _ = run_init(config)
-    check(returncode != 0, 'docker dep name with a registry was accepted')
+    result = run_cppdock(['init'], config)
+    check(result.returncode != 0, 'docker dep name with a registry was accepted')
 
-test_lock()
+# Make a config whose only dep is a docker dep locked to `revision`.
+def docker_dep_config(revision):
+    return {
+        'cppdock': {'name': 'test_fetch'},
+        'platforms': {'main': {
+            'type': 'linux_x64',
+            'deps': [[{'name': 'ricejasonf/cppdock', 'type': 'docker',
+                       'revision': revision}]]}}}
+
+def test_build_fetch():
+    result = run_cppdock(['build', 'main'],
+        docker_dep_config(layers_lock(cppdock_layers)),
+        remote = {cppdock_lock_ref: image(cppdock_image, cppdock_layers)})
+    check(result.returncode == 0, '`cppdock build` failed to fetch a dep')
+    check(pulled(result) == [cppdock_lock_ref],
+          '`cppdock build` did not pull only the lock tag')
+    check(f'FROM {cppdock_lock_ref} AS' in result.dockerfiles,
+          'build stage does not use the lock tag')
+
+def test_build_fetch_by_tag():
+    result = run_cppdock(['build', 'main'],
+        docker_dep_config(layers_lock(cppdock_layers)),
+        remote = {cppdock_image + ':latest':
+            image(cppdock_image, cppdock_layers, cppdock_digest)})
+    check(result.returncode == 0, '`cppdock build` did not fall back to the tag')
+    check(pulled(result) == [cppdock_lock_ref, cppdock_image + ':latest'],
+          '`cppdock build` did not try the lock tag and then the tag')
+    check(cppdock_lock_ref in result.local,
+          'fallback image not tagged with its layers lock')
+    check(f'FROM {cppdock_lock_ref} AS' in result.dockerfiles,
+          'build stage does not use the lock tag')
+
+def test_build_fetch_by_tag_mismatch():
+    result = run_cppdock(['build', 'main'],
+        docker_dep_config(layers_lock(cppdock_layers)),
+        remote = {cppdock_image + ':latest':
+            image(cppdock_image, layers_of('newer'), cppdock_digest)})
+    check(result.returncode != 0,
+          '`cppdock build` accepted a tag with other layers')
+    check(f'the registry has no {cppdock_lock_ref}' in result.output,
+          'error does not say the lock tag is missing from the registry')
+
+def test_build_digest():
+    digest_ref = f'{cppdock_image}@{cppdock_digest}'
+    result = run_cppdock(['build', 'main'], docker_dep_config(cppdock_digest),
+        remote = {digest_ref:
+            image(cppdock_image, cppdock_layers, cppdock_digest)})
+    check(result.returncode == 0, '`cppdock build` failed with a digest lock')
+    check(pulled(result) == [digest_ref], 'digest lock not pulled by digest')
+    check(f'FROM {digest_ref} AS' in result.dockerfiles,
+          'build stage does not use the digest')
+
+def test_build_verify():
+    result = run_cppdock(['build', 'main'],
+        docker_dep_config(layers_lock(cppdock_layers)),
+        local = {cppdock_lock_ref: image(cppdock_image, layers_of('other'))})
+    check(result.returncode != 0,
+          '`cppdock build` accepted an image with other layers')
+    check(pulled(result) == [], '`cppdock build` pulled an image that is local')
+    check(result.dockerfiles.count('FROM') == 1,
+          '`cppdock build` built the deps image after a failed check')
+
+test_lock_digest()
+test_lock_layers()
+test_lock_local()
+test_lock_unreleased()
+test_lock_stale_digest()
 test_registry()
 test_registry_in_name()
+test_build_fetch()
+test_build_fetch_by_tag()
+test_build_fetch_by_tag_mismatch()
+test_build_digest()
+test_build_verify()
 print('PASS')

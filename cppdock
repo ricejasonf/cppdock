@@ -6,6 +6,7 @@ from uuid import getnode as get_mac
 import argparse
 import shutil
 import glob
+import hashlib
 import itertools
 import json
 import os
@@ -115,7 +116,9 @@ class DockerDepSpec(DepSpec):
     def __init__(self, platform: 'PlatformSpec', obj: JsonDict):
         # Additional image tag name
         self.tag: Optional[str] = "latest"
-        # Revision lock value (SHA256 Digest)
+        # Revision lock value: "layers:sha256:..." (see get_layers_hash) for
+        # images released by cppdock or "sha256:..." (a manifest digest)
+        # for any other image.
         # An empty string is accepted for local images to
         # be specified by "{name}:{tag}".
         self.revision: str
@@ -124,6 +127,7 @@ class DockerDepSpec(DepSpec):
         self.registry: Optional[str] = None
 
         super().__init__(platform, obj)
+        self.tag = self.tag or 'latest'
         self.revision = obj['revision']
         check_dep_image_name(self.name)
 
@@ -132,12 +136,52 @@ class DockerDepSpec(DepSpec):
         registry = self.registry or self.platform.config.default_registry
         return qualify_image_name(self.name, registry)
 
-    def get_build_stage_spec(self):
-        assert self.revision is not None
+    def get_tag_ref(self) -> str:
+        return f'{self.get_image_name()}:{self.tag}'
+
+    # Get the image reference that build stages use.
+    def get_image_ref(self) -> str:
         if self.revision == "":
-            return '{0}:{1}'.format(name, tag)
-        else:
-            return '{0}@{1}'.format(name, revision)
+            return self.get_tag_ref()
+        if is_layers_lock(self.revision):
+            return get_lock_image_ref(self.get_image_name(), self.revision)
+        return f'{self.get_image_name()}@{self.revision}'
+
+    # Make the locked image local and check its layers hash.
+    def fetch(self):
+        if self.revision == "":
+            return
+        image_ref = self.get_image_ref()
+        if not is_layers_lock(self.revision):
+            if get_image_inspect(image_ref) is None:
+                pull_image(image_ref)
+            return
+        if get_image_inspect(image_ref) is None and \
+                not try_pull_image(image_ref):
+            self.fetch_by_tag(image_ref)
+        layers_hash = get_layers_lock(image_ref)
+        if layers_hash != self.revision:
+            sys.exit(f'cppdock: image {image_ref} has layers hash '
+                     f'{layers_hash}, but dep "{self.name}" is locked to '
+                     f'{self.revision}. Remove its "revision" to relock.')
+
+    # Make the lock tag from "{name}:{tag}" if that image has the locked layers.
+    def fetch_by_tag(self, image_ref: str):
+        tag_ref = self.get_tag_ref()
+        print(f'cppdock: {image_ref} is not in the registry; '
+              f'trying {tag_ref}')
+        if get_layers_lock(tag_ref) != self.revision:
+            try_pull_image(tag_ref)
+        layers_hash = get_layers_lock(tag_ref)
+        if layers_hash != self.revision:
+            found = (f'has layers hash {layers_hash}' if layers_hash
+                     else 'cannot be pulled')
+            sys.exit(f'cppdock: dep "{self.name}" is locked to '
+                     f'{self.revision}, but the registry has no {image_ref} '
+                     f'and {tag_ref} {found}. Push {image_ref} from a '
+                     f'machine that has it, or remove the "revision" to '
+                     f'relock.')
+        tag_image(tag_ref, image_ref)
 
 class VolumeDepSpec(DepSpec):
     _is_overlay_mounted:bool = True
@@ -404,6 +448,111 @@ def check_dep_image_name(name: str):
     if has_registry_host(name):
         raise ValueError(f'Docker dep "{name}" names a registry; '
                          'use the "registry" property instead')
+
+# Mark a revision as a layers hash rather than a manifest digest.
+layers_lock_prefix = 'layers:'
+
+def is_layers_lock(revision: str) -> bool:
+    return revision.startswith(layers_lock_prefix)
+
+# Get the inspect object of a local image, or None if it is not local.
+def get_image_inspect(image_ref: str) -> Optional[JsonDict]:
+    result = subprocess.run([container_engine, 'image', 'inspect', image_ref],
+                            capture_output=True)
+    if result.returncode != 0:
+        return None
+    return json.loads(result.stdout)[0]
+
+# Get the layers lock of a local image, or None if it is not local.
+# Hash its uncompressed layer diff IDs, one per line, so that push,
+# pull, compression and the engine do not change it.
+def get_layers_lock(image_ref: str) -> Optional[str]:
+    inspect = get_image_inspect(image_ref)
+    if inspect is None:
+        return None
+    data = ''.join(layer + '\n' for layer in inspect['RootFS']['Layers'])
+    return (layers_lock_prefix + 'sha256:'
+            + hashlib.sha256(data.encode()).hexdigest())
+
+# Get the reference of the tag that marks an image with its layers lock.
+def get_lock_image_ref(image_name: str, layers_lock: str) -> str:
+    match = re.fullmatch(re.escape(layers_lock_prefix) + 'sha256:([0-9a-f]{64})',
+                         layers_lock)
+    if match is None:
+        raise ValueError(f'Invalid layers lock for {image_name}: {layers_lock}')
+    return f'{image_name}:layers-sha256-{match.group(1)}'
+
+# Get the manifest digest of an image that was just pulled, or None.
+# Do not trust RepoDigests under podman: it keeps the digest of the
+# local manifest, which the registry does not have after a push.
+def get_pulled_digest(image_ref: str, image_name: str) -> Optional[str]:
+    inspect = get_image_inspect(image_ref) or {}
+    if inspect.get('Digest'):
+        return inspect['Digest']
+    for repo_digest in inspect.get('RepoDigests') or []:
+        name, _, digest = repo_digest.partition('@')
+        if name == image_name:
+            return digest
+    return None
+
+# Remove the tag from an image reference.
+def strip_image_tag(image_ref: str) -> str:
+    head, slash, last = image_ref.rpartition('/')
+    return head + slash + last.split(':')[0]
+
+def pull_image(image_ref: str):
+    if not try_pull_image(image_ref):
+        raise RuntimeError('Unable to pull image: ' + image_ref)
+
+# Pull an image; return whether it succeeded.
+def try_pull_image(image_ref: str, quiet: bool = False) -> bool:
+    output = subprocess.DEVNULL if quiet else None
+    return subprocess.call([container_engine, 'pull', image_ref],
+                           stdout=output, stderr=output) == 0
+
+def tag_image(image_ref: str, tag_ref: str):
+    subprocess.check_output([container_engine, 'tag', image_ref, tag_ref])
+
+# Tag a local image with its layers lock; return the lock and the tag.
+def tag_image_with_lock(image_ref: str) -> Tuple[str, str]:
+    layers_lock = get_layers_lock(image_ref)
+    if layers_lock is None:
+        raise RuntimeError('Image is not local: ' + image_ref)
+    lock_ref = get_lock_image_ref(strip_image_tag(image_ref), layers_lock)
+    tag_image(image_ref, lock_ref)
+    return layers_lock, lock_ref
+
+# Lock an image by its layers if it has a lock tag (as cppdock releases
+# do), and by its registry manifest digest otherwise.
+def lock_docker_image(image_name: str, tag: str) -> str:
+    image_ref = f'{image_name}:{tag}'
+    is_pulled = get_image_inspect(image_ref) is None
+    if is_pulled:
+        pull_image(image_ref)
+    if layers_lock := find_layers_lock(image_name, image_ref):
+        return layers_lock
+    # Pull to learn the manifest digest the registry has.
+    if not is_pulled:
+        if not try_pull_image(image_ref):
+            sys.exit(f'cppdock: unable to lock {image_ref}: it has no '
+                     '"layers-sha256-" tag and cannot be pulled. Make it '
+                     'with `cppdock release` or push it.')
+        if layers_lock := find_layers_lock(image_name, image_ref):
+            return layers_lock
+    digest = get_pulled_digest(image_ref, image_name)
+    if digest is None:
+        raise RuntimeError('Unable to get the manifest digest of ' + image_ref)
+    return digest
+
+# Get the layers lock of a local image if it has a lock tag, or None.
+def find_layers_lock(image_name: str, image_ref: str) -> Optional[str]:
+    layers_lock = get_layers_lock(image_ref)
+    lock_ref = get_lock_image_ref(image_name, layers_lock)
+    # Probe quietly since the layers are already local.
+    if get_image_inspect(lock_ref) is not None or \
+            try_pull_image(lock_ref, quiet = True):
+        return layers_lock
+    return None
 
 def remove_none(obj):
   if isinstance(obj, (list, tuple, set)):
@@ -706,16 +855,17 @@ def command_release(args):
     run_build_image_install(platform, install_dir)
     make_release_image(platform, install_dir)
     image_name = get_release_tag_name(platform)
-    if tag_name:
-        print(f'Tagging image {image_name}: {tag_name}')
-        subprocess.check_output([container_engine, 'tag', image_name, tag_name])
-    if tag_name and args.push:
-        print(f'Pushing release with tag: {tag_name}')
-        subprocess.check_output([container_engine, 'push', tag_name])
-    elif tag_name:
-        print(f"Skipping push: {tag_name}")
+    print(f'Tagging image {image_name}: {tag_name}')
+    tag_image(image_name, tag_name)
+    layers_lock, lock_ref = tag_image_with_lock(tag_name)
+    print(f'Tagging image {image_name}: {lock_ref}')
+    print(f'Layers lock: {layers_lock}')
+    if args.push:
+        for ref in [tag_name, lock_ref]:
+            print(f'Pushing release with tag: {ref}')
+            subprocess.check_output([container_engine, 'push', ref])
     else:
-        print("Skipping push")
+        print(f'Skipping push: {tag_name} {lock_ref}')
 
 def check_deps_for_release(platform: PlatformSpec):
     for deps in platform.deps_stages:
@@ -730,9 +880,17 @@ def make_build_image(platform: PlatformSpec, print_only = False):
         return
 
     make_base_image(platform, print_only)
+    if not print_only:
+        fetch_docker_deps(platform)
     dockerfile = make_deps_dockerfile(platform)
     tag_name = get_build_tag_name(platform)
     make_docker_image(tag_name, dockerfile, print_only)
+
+# Make the locked docker deps local and verify them.
+def fetch_docker_deps(platform: PlatformSpec):
+    for _, dep in platform.enumerate_deps():
+        if isinstance(dep, DockerDepSpec):
+            dep.fetch()
 
 def make_release_image(platform: PlatformSpec, context_dir):
     if is_platform_service(platform):
@@ -1097,22 +1255,8 @@ def get_current_sha_with_comment(item, default_registry):
             tag = tag or 'latest'
             check_dep_image_name(repo)
             registry = item.get('registry') or default_registry
-            repo_tag = qualify_image_name(repo + ":" + tag, registry)
-
-            try:
-                # pull the image from the registry to get the RepoDigest
-                subprocess.check_output([container_engine, 'pull', repo_tag])
-            except:
-                raise RuntimeError("Unable to pull docker image from registry: " + repo_tag )
-
-            try:
-                inspect_result =  subprocess.check_output(
-                        [container_engine, 'image', 'inspect', repo_tag])
-                digest = json.loads(inspect_result)[0]['RepoDigests'][0].split('@')[1]
-            except:
-                raise RuntimeError("Unable to get SHA from docker image")
-
-            return digest
+            # Lock to the local image, pulling it only if it is missing.
+            return lock_docker_image(qualify_image_name(repo, registry), tag)
         else:
             tag = normalize_branch_name(tag)
             lines = subprocess.check_output(['git', 'ls-remote', normalize_repo_name(repo)]).splitlines()
@@ -1356,9 +1500,7 @@ def get_stage_docker_image_digest(stage_deps: List[DepSpec]):
     if len(stage_deps) == 1:
         for dep in stage_deps:
             if isinstance(dep, DockerDepSpec):
-                repo_name = dep.get_image_name()
-                revision = dep.revision
-                return f'{repo_name}@{revision}'
+                return dep.get_image_ref()
     return None
 
 def make_install_dep(platform: PlatformSpec, dep: DepSpec):
@@ -1367,12 +1509,11 @@ def make_install_dep(platform: PlatformSpec, dep: DepSpec):
     revision = dep.revision
     repo_name = dep.name
     if isinstance(dep, DockerDepSpec):
-        repo_name = dep.get_image_name()
-        revision = dep.revision
+        image_ref = dep.get_image_ref()
         dest_dir = platform.dest_dir;
         return f"""
-    COPY --from={repo_name}@{revision} /opt/install {dest_dir}
-    COPY --from={repo_name}@{revision} /opt/install /opt/install"""
+    COPY --from={image_ref} /opt/install {dest_dir}
+    COPY --from={image_ref} /opt/install /opt/install"""
 
     if revision is None:
         return ''
