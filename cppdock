@@ -953,8 +953,9 @@ def command_dev(args):
     print_only = False
     make_build_image(platform, print_only)
     cluster_sync_source(config)
-    run_build_image(platform, args.target, args.shell,
-                    args.shell_only, args.privileged, ports_arg)
+    returncode = run_build_image(platform, args.target, args.shell,
+                                 args.shell_only, args.privileged, ports_arg)
+    sys.exit(returncode)
 
 def command_dev_cluster(args):
     require_docker('`dev_cluster`')
@@ -1590,11 +1591,11 @@ def run_build_image(platform: PlatformSpec, target,
     dep_mounts = [dep.create_mount_option(index)
                   for index, dep in platform.enumerate_deps()]
 
-    subprocess.call(remove_none([container_engine, 'run', '--rm', '-it', ports_arg, privileged_op]
-                                 + mount_src
-                                 + mount_build
-                                 + [ tag_name ]
-                                 + cmd))
+    return subprocess.call(remove_none([container_engine, 'run', '--rm', '-it', ports_arg, privileged_op]
+                                        + mount_src
+                                        + mount_build
+                                        + [ tag_name ]
+                                        + cmd))
 
 # Used by command_release.
 def run_build_image_install(platform: PlatformSpec, install_dir):

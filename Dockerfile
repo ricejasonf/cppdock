@@ -4,7 +4,7 @@ RUN  apt-get update \
   && apt-get -yq install \
       python-is-python3 python3-pip cmake git autoconf \
       bash-completion vim wget xz-utils \
-      libedit-dev valgrind \
+      libedit-dev valgrind spirv-tools \
   && pip install lit --break-system-packages \
   && echo '. /usr/share/bash-completion/bash_completion && set -o vi' >> /root/.bashrc \
   && echo 'HISTCONTROL=ignoreboth:erasedups' >> /root/.bashrc \

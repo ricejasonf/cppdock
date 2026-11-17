@@ -4,3 +4,5 @@ FROM docker.io/ricejasonf/cppdock:latest
   RUN mv /usr/local/lib/x86_64-unknown-linux-gnu/* /usr/local/lib && \
       rmdir /usr/local/lib/x86_64-unknown-linux-gnu
   RUN ldconfig
+  # Make libc++ the default standard library for clang++.
+  RUN echo '-stdlib=libc++' > /usr/local/bin/clang++.cfg
