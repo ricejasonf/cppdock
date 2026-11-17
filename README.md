@@ -93,6 +93,35 @@ A platform of type `image` builds a Dockerfile, and `cppdock release` tags the r
 
 The `cppdock.json` in this repo builds the `cppdock`, `linux_x64` and `emscripten` images this way. After rebuilding one of them, delete the `revision` of the dep that names it in the next image and run `cppdock init` to relock it. `cppdock release --push --no-build` pushes an image that was already released without building it again, as `make push` does.
 
+### Local Overrides
+
+A `cppdock-local.json` beside `cppdock.json` overrides it on this machine only. Keep it out of version control. It is merged after locking and is never written back, so `cppdock.json` keeps its locks.
+
+- Top-level sections (such as `cppdock`) are merged by key.
+- A platform's options are overridden by key.
+- A platform's `deps` is a flat list. Each entry overrides, in place, the dep with the same `name`.
+- A docker dep override without a `revision` uses the local image `name:tag` as it is, unverified.
+- A git dep override without a `revision` is relocked to its `tag`.
+
+For example, to build a project against a dependency you released locally:
+
+```json
+{
+  "platforms": {
+    "develop": {
+      "deps": [{"name": "ricejasonf/schir-project"}]
+    }
+  }
+}
+```
+
+A platform's `cmake_args` lists extra arguments for the CMake configure step of the project, such as `["-DSCHIR_ENABLE_ASSERTIONS=ON"]`. The default recipes read them from `CPPDOCK_CMAKE_ARGS`.
+
+While a local file is present:
+
+- Builds use a separate build volume, named with a `-local` suffix.
+- `cppdock release --push` refuses to run.
+
 ### Custom Recipes
 
 Recipes are just bash scripts that are run in a Docker container.

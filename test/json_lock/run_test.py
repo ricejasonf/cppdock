@@ -412,6 +412,70 @@ def test_build_verify():
     check(result.dockerfiles.count('FROM') == 1,
           '`cppdock build` built the deps image after a failed check')
 
+def local_file(obj):
+    return {'cppdock-local.json': json.dumps(obj)}
+
+def test_local_dep():
+    config = docker_dep_config(layers_lock(cppdock_layers))
+    tag_ref = cppdock_image + ':latest'
+    result = run_cppdock(['build', 'main'], config,
+        local = base_local | {tag_ref: image(cppdock_image, layers_of('dev'))},
+        files = local_file({'platforms': {'main': {
+            'deps': [{'name': 'ricejasonf/cppdock'}]}}}))
+    check(result.returncode == 0, '`cppdock build` failed with a local dep')
+    check('using local overrides' in result.output,
+          'local overrides not announced')
+    check(f'FROM {tag_ref} AS' in result.dockerfiles,
+          'local dep not used by its tag')
+    check(pulled(result) == [], 'local dep pulled')
+    check(result.config == config, 'local overrides written to cppdock.json')
+
+def test_local_base_image():
+    other = 'docker.io/ricejasonf/other:dev'
+    result = run_cppdock(['build', 'main'],
+        docker_dep_config(layers_lock(cppdock_layers)),
+        local = {other: image('docker.io/ricejasonf/other', ['other']),
+                 cppdock_lock_ref: image(cppdock_image, cppdock_layers)},
+        files = local_file({'platforms': {'main': {
+            'base_image': 'ricejasonf/other:dev'}}}))
+    check(result.returncode == 0,
+          '`cppdock build` failed with a local base image')
+    check(f'FROM {other}\n' in result.dockerfiles,
+          'local base image not used by its tag')
+
+def test_local_unknown():
+    config = docker_dep_config(layers_lock(cppdock_layers))
+    for local_obj in [{'platforms': {'main': {'deps': [{'name': 'x/y'}]}}},
+                      {'platforms': {'other': {}}}]:
+        result = run_cppdock(['build', 'main'], config,
+                             files = local_file(local_obj))
+        check(result.returncode != 0,
+              f'unknown dep or platform accepted in {local_obj}')
+
+def test_local_cmake_args():
+    config = docker_dep_config(layers_lock(cppdock_layers))
+    result = run_cppdock(['dev', 'main', '--target', 'check'], config,
+        local = base_local |
+            {cppdock_lock_ref: image(cppdock_image, cppdock_layers)},
+        files = local_file({'platforms': {'main': {
+            'cmake_args': ['-DA=ON', '-DB=x y']}}}))
+    runs = [line for line in result.log if line.startswith('run ')]
+    check(len(runs) == 1 and
+          "--env CPPDOCK_CMAKE_ARGS=-DA=ON '-DB=x y'" in runs[0],
+          'cmake_args not passed to the container')
+    check('--volume test_fetch-main-debug-local:/opt/build' in runs[0],
+          'local overrides use the committed build volume')
+
+def test_local_push():
+    result = run_cppdock(['release', '--push', '--no-build', 'img'],
+        image_config(),
+        local = {'test_image-img': image('test_image-img',
+                                         ['sha256:test_image-img'])},
+        files = local_file({}))
+    check(result.returncode != 0 and 'local overrides' in result.output,
+          'release pushed with local overrides')
+    check(result.remote == set(), 'release pushed with local overrides')
+
 test_lock_digest()
 test_lock_layers()
 test_lock_local()
@@ -432,4 +496,9 @@ test_release_no_build()
 test_release_no_build_missing()
 test_image_dep_without_build_arg()
 test_dev_image()
+test_local_dep()
+test_local_base_image()
+test_local_unknown()
+test_local_cmake_args()
+test_local_push()
 print('PASS')

@@ -12,6 +12,7 @@ import itertools
 import json
 import os
 import re
+import shlex
 import string
 import subprocess
 import sys
@@ -26,6 +27,8 @@ from typing import *
 
 root_path = os.path.abspath('.')
 default_json_file_path = root_path + '/cppdock.json'
+# Name the git-ignored file beside cppdock.json that overrides it locally.
+local_json_file_name = 'cppdock-local.json'
 default_dep_path = "https://github.com/"
 noop = lambda *x: None
 # Name the container engine command (podman or docker.)
@@ -257,6 +260,9 @@ class PlatformSpec(SpecBase):
         # for use with `cppdock init_service`
         self.build_type: Optional[str] = None
         self.release_target: str = 'install'
+        # Pass extra arguments to the CMake configure step of the project
+        # (as CPPDOCK_CMAKE_ARGS to the recipe.)
+        self.cmake_args: List[str] = []
 
         deps_list = obj.get('deps', [])
         if 'deps' in obj:
@@ -290,7 +296,11 @@ class PlatformSpec(SpecBase):
     def get_volume_name(self, build_type = None):
         if build_type == None:
             build_type = get_build_type(self).lower()
-        return get_image_tag_name(self, build_type)
+        name = get_image_tag_name(self, build_type)
+        # Keep builds with local overrides out of the committed build volume.
+        if self.config.local_config_path:
+            name += '-local'
+        return name
 
     # Return an enumerated list of all deps.
     def enumerate_deps(self):
@@ -457,6 +467,8 @@ class Config(SpecBase):
         # Top level secrets for docker compose
         # Do not put actual secrets here.
         self.secrets: dict[str, Any] = {}
+        # Name the merged local override file, if any.
+        self.local_config_path: Optional[str] = None
 
         super().__init__(obj)
         cppdock = self.orig_obj['cppdock']
@@ -904,6 +916,9 @@ def command_release(args):
 
     # Check that there are no mounted deps.
     check_deps_for_release(platform)
+    if args.push and config.local_config_path:
+        sys.exit(f'cppdock: not pushing a release built with local '
+                 f'overrides from {config.local_config_path}')
 
     if tag_name is None or len(tag_name) == 0:
         raise ValueError(
@@ -1219,11 +1234,71 @@ def load_config_file(json_file_path: str) -> Config:
 
     config_obj = lock_config_file_deps(config_obj)
     write_config_file(config_obj, json_file_path)
+    local_config_path = merge_local_config(config_obj, json_file_path)
 
     config_obj = normalize_config_paths(config_obj)
     config_obj = merge_base_config(config_obj, config_paths)
 
-    return Config(config_obj)
+    config = Config(config_obj)
+    config.local_config_path = local_config_path
+    return config
+
+# Merge the local override file into the locked config; return its path.
+def merge_local_config(config_obj, json_file_path) -> Optional[str]:
+    config_dir = json_file_path if os.path.isdir(json_file_path) \
+                 else os.path.dirname(os.path.abspath(json_file_path))
+    local_path = os.path.join(config_dir, local_json_file_name)
+    if not os.path.isfile(local_path):
+        return None
+    with open(local_path, 'r') as fh:
+        local_obj = json.load(fh, object_pairs_hook=OrderedDict)
+    print(f'cppdock: using local overrides from {local_path}')
+    for key, value in local_obj.items():
+        if key == 'platforms':
+            continue
+        if isinstance(value, dict) and isinstance(config_obj.get(key), dict):
+            config_obj[key].update(value)
+        else:
+            config_obj[key] = value
+    default_registry = config_obj['cppdock'].get('default_registry',
+                                                 'docker.io')
+    platforms = config_obj.get('platforms', {})
+    for name, local_platform in local_obj.get('platforms', {}).items():
+        if name not in platforms:
+            raise ValueError(f'{local_path}: unknown platform "{name}"')
+        merge_local_platform(platforms[name], local_platform,
+                             default_registry)
+    return local_path
+
+# Override platform options by key and deps by name.
+def merge_local_platform(settings, local_settings, default_registry):
+    local_deps = local_settings.get('deps', [])
+    for key, value in local_settings.items():
+        if key != 'deps':
+            settings[key] = value
+    if ('base_image' in local_settings or 'type' in local_settings) and \
+            'base_image_revision' not in local_settings:
+        settings.pop('base_image_revision', None)
+    for local_dep in local_deps:
+        if not isinstance(local_dep, dict) or 'name' not in local_dep:
+            raise ValueError('Each local dep override must be an object '
+                             'with a "name".')
+        deps = [dep for stage in settings.get('deps', []) for dep in stage
+                if dep['name'] == local_dep['name']]
+        if not deps:
+            raise ValueError(f'No dep named "{local_dep["name"]}" '
+                             'to override')
+        for dep in deps:
+            dep.update(local_dep)
+            if 'revision' in local_dep:
+                continue
+            # Use the local image by tag, or relock a git dep to its tag.
+            dep.pop('revision', None)
+            match dep.get('type', 'github'):
+                case 'docker':
+                    dep['revision'] = ''
+                case 'github':
+                    lock_item_json(dep, default_registry)
 
 def load_config_file_json(json_file_path):
     if os.path.isdir(json_file_path):
@@ -1688,6 +1763,11 @@ def get_run_options_mount_build(platform: PlatformSpec):
 def get_run_options_mount_install(platform: PlatformSpec, install_dir):
     return ['--mount', f"type=bind,source={install_dir},target=/opt/install"]
 
+def get_run_options_env(platform: PlatformSpec):
+    if not platform.cmake_args:
+        return []
+    return ['--env', 'CPPDOCK_CMAKE_ARGS=' + shlex.join(platform.cmake_args)]
+
 def run_build_image(platform: PlatformSpec, target,
                     shell, shell_only, privileged, ports_arg):
     tag_name = get_build_tag_name(platform)
@@ -1712,6 +1792,7 @@ def run_build_image(platform: PlatformSpec, target,
     return subprocess.call(remove_none([container_engine, 'run', '--rm', '-it', ports_arg, privileged_op]
                                         + mount_src
                                         + mount_build
+                                        + get_run_options_env(platform)
                                         + [ tag_name ]
                                         + cmd))
 
@@ -1732,6 +1813,7 @@ def run_build_image_install(platform: PlatformSpec, install_dir):
                                  + mount_src
                                  + mount_build
                                  + mount_install
+                                 + get_run_options_env(platform)
                                  + [ tag_name ]
                                  + cmd))
     if returncode != 0:

@@ -9,11 +9,14 @@ BUILD_TYPE=${BUILD_TYPE:-release}
 TOOLCHAIN_FILE=${TOOLCHAIN_FILE:-/opt/toolchain.cmake}
 TARGET=${TARGET:-install}
 NPROC=${NPROC:-$(nproc)}
+# Split the extra CMake arguments that cppdock quotes for the shell.
+eval "CMAKE_ARGS=(${CPPDOCK_CMAKE_ARGS:-})"
 
 ${EMSCRIPTEN_ROOT}/emcmake cmake \
     -DCMAKE_TOOLCHAIN_FILE=${TOOLCHAIN_FILE} \
     -DCMAKE_BUILD_TYPE=${BUILD_TYPE} \
     -DCMAKE_INSTALL_PREFIX=/opt/install \
+    "${CMAKE_ARGS[@]}" \
     /opt/src \
 
 # INIT_ONLY is used for allowing a shell environment
