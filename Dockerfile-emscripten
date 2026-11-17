@@ -3,18 +3,19 @@ FROM docker.io/ricejasonf/cppdock:linux_x64 AS base_image
 
 FROM docker.io/ricejasonf/cppdock:linux_x64 AS build_binaryen
   WORKDIR /opt/src
-  RUN git clone --depth=1 --branch version_129 \
+  RUN git clone --depth=1 --branch version_131 \
     https://github.com/WebAssembly/binaryen.git
   WORKDIR /opt/build
   RUN cmake -DCMAKE_TOOLCHAIN_FILE=/opt/cppdock/toolchains/linux_x64.cmake \
             -DBUILD_TESTS=OFF \
+            -DENABLE_WERROR=OFF \
             -DCMAKE_INSTALL_PREFIX=/opt/install \
             /opt/src/binaryen && \
     make -j$(nproc) && make install
 
 FROM base_image AS build_emscripten
   WORKDIR /opt/src
-  RUN git clone --depth=1 --branch 5.0.7 \
+  RUN git clone --depth=1 --branch 6.0.6 \
     https://github.com/emscripten-core/emscripten
   WORKDIR /opt/src/emscripten
   RUN ./tools/maint/create_entry_points.py && \
@@ -28,10 +29,6 @@ FROM base_image
   COPY --from=build_emscripten /opt/install/ /usr/local
   WORKDIR /usr/local/emscripten
   RUN ./emcc --generate-config && ./emcc --check && ./embuilder.py build MINIMAL
-
-  # Copy schir-scheme libraries
-  COPY --from=base_image /opt/sysroot/include/schir/*.sld ./cache/sysroot/include/schir/
-  COPY --from=base_image /opt/sysroot/include/schir/base/*.sld ./cache/sysroot/include/schir/base/
 
   RUN ln -snf /usr/local/emscripten/cache/sysroot/ /opt/sysroot
   ENV EMSCRIPTEN_ROOT=/usr/local/emscripten
