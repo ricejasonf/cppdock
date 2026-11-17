@@ -1,7 +1,8 @@
-FROM docker.io/ricejasonf/cppdock:linux_x64 AS base_image
+ARG LINUX_X64
+FROM ${LINUX_X64} AS base_image
   RUN apt-get update -yq && apt-get install -yq nodejs npm
 
-FROM docker.io/ricejasonf/cppdock:linux_x64 AS build_binaryen
+FROM ${LINUX_X64} AS build_binaryen
   WORKDIR /opt/src
   RUN git clone --depth=1 --branch version_131 \
     https://github.com/WebAssembly/binaryen.git
@@ -22,9 +23,6 @@ FROM base_image AS build_emscripten
       ./tools/install.py /opt/install/emscripten
   
 FROM base_image
-  COPY cppdock /usr/local/bin/
-  COPY recipes/ /opt/cppdock/recipes
-  COPY toolchains/ /opt/cppdock/toolchains
   COPY --from=build_binaryen /opt/install/ /usr/local
   COPY --from=build_emscripten /opt/install/ /usr/local
   WORKDIR /usr/local/emscripten

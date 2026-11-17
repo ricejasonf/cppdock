@@ -1,5 +1,9 @@
-FROM docker.io/ricejasonf/cppdock:latest
-  COPY --from=docker.io/ricejasonf/llvm-project-release /opt/install/ /opt/sysroot
+ARG CPPDOCK
+ARG LLVM
+FROM ${LLVM} AS llvm
+
+FROM ${CPPDOCK}
+  COPY --from=llvm /opt/install/ /opt/sysroot
   # Make the libc++.so.1 and pals part of the system because why not.
   RUN mv /usr/local/lib/x86_64-unknown-linux-gnu/* /usr/local/lib && \
       rmdir /usr/local/lib/x86_64-unknown-linux-gnu

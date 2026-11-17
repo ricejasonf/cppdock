@@ -65,6 +65,34 @@ The great thing about this is that the builds for each library are cached by Doc
 
 This also creates a more disciplined approach to dependency management that doesn't rely on third parties creating release tags.
 
+A docker dep is locked to `layers:sha256:<hex>`, a hash of its layers, when the image has a `layers-sha256-<hex>` tag (`cppdock release` adds one), and to its manifest digest `sha256:<hex>` otherwise.
+
+The platform's base image is locked the same way, in `base_image_revision`. Set it to `""` to leave the base image unlocked. Every image a generated build uses is made local before the build, so the build never pulls.
+
+### Platform Images
+
+A platform of type `image` builds a Dockerfile, and `cppdock release` tags the result with its `push_tag` and its layers tag. Its deps are docker deps, and each one is passed to the Dockerfile as the build arg its `build_arg` names, so each `FROM` names a locked image:
+
+```json
+"linux_x64": {
+  "type": "image",
+  "dockerfile": "Dockerfile-linux_x64",
+  "push_tag": "ricejasonf/cppdock:linux_x64",
+  "deps": [
+    [
+      {
+        "name": "ricejasonf/cppdock",
+        "type": "docker",
+        "build_arg": "CPPDOCK",
+        "revision": "layers:sha256:430d584fb88f..."
+      }
+    ]
+  ]
+}
+```
+
+The `cppdock.json` in this repo builds the `cppdock`, `linux_x64` and `emscripten` images this way. After rebuilding one of them, delete the `revision` of the dep that names it in the next image and run `cppdock init` to relock it. `cppdock release --push --no-build` pushes an image that was already released without building it again, as `make push` does.
+
 ### Custom Recipes
 
 Recipes are just bash scripts that are run in a Docker container.
@@ -127,4 +155,4 @@ Consider the following setup for a hypothetical `mydroid` platform:
 }
 ```
 
-The platform base image should have any build tools required such as CMake or Python as well as an `/opt/toolchain.cmake` if you are relying on any default CMake recipes.
+The platform base image should have any build tools required such as CMake or Python as well as an `/opt/toolchain.cmake` if you are relying on any default CMake recipes. It also needs the builtin recipes and toolchain files in `/opt/cppdock`, as the cppdock images have. The `cppdock` script itself is not in any image: each build copies the running script into the image it generates from the base image.

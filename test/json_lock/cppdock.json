@@ -5,6 +5,7 @@
   "platforms": {
     "my_linux_x64": {
       "type": "linux_x64",
+      "base_image_revision": "",
       "deps": [
         [
           {
@@ -31,6 +32,7 @@
     "my_emscripten": {
       "base_image": "ricejasonf/cppdock:emscripten_1_37_19",
       "type": "emscripten",
+      "base_image_revision": "",
       "deps": [
         [
           {

@@ -4,6 +4,7 @@ from collections import OrderedDict
 from collections import namedtuple
 from uuid import getnode as get_mac
 import argparse
+import contextlib
 import shutil
 import glob
 import hashlib
@@ -14,6 +15,7 @@ import re
 import string
 import subprocess
 import sys
+import tempfile
 import time
 from urllib.request import urlopen
 import warnings
@@ -125,6 +127,8 @@ class DockerDepSpec(DepSpec):
 
         # Registry to pull the image from (default: cppdock.default_registry)
         self.registry: Optional[str] = None
+        # Dockerfile ARG that names the image (for "image" platforms)
+        self.build_arg: Optional[str] = None
 
         super().__init__(platform, obj)
         self.tag = self.tag or 'latest'
@@ -150,6 +154,8 @@ class DockerDepSpec(DepSpec):
     # Make the locked image local and check its layers hash.
     def fetch(self):
         if self.revision == "":
+            if get_image_inspect(self.get_tag_ref()) is None:
+                pull_image(self.get_tag_ref())
             return
         image_ref = self.get_image_ref()
         if not is_layers_lock(self.revision):
@@ -221,6 +227,8 @@ class PlatformSpec(SpecBase):
         self.deps_stages: List[List[DepSpec]] = []
         # Name of docker image to base off of
         self.base_image: Optional[str] = None
+        # Revision lock of base_image (see DockerDepSpec.revision)
+        self.base_image_revision: Optional[str] = None
         # Path to Dockerfile to create base image instead of using base_image
         self.base_image_dockerfile: Optional[str] = None
         # Path to sysroot directory
@@ -267,20 +275,11 @@ class PlatformSpec(SpecBase):
     def create(config: 'Config', name: str, obj: JsonDict):
         type = obj.get('type')
         match type:
-            case 'linux_x64':
-                default_obj = {
-                    'base_image': 'ricejasonf/cppdock:linux_x64',
-                    'toolchain_file': '/opt/cppdock/toolchains/linux_x64.cmake',
-                    'service_init_script': '/opt/cppdock/recipes/default'
-                }
-                return PlatformSpec(config, name, default_obj | obj)
-            case 'emscripten':
-                default_obj = {
-                    'base_image': 'ricejasonf/cppdock:emscripten',
-                    'toolchain_file': '/opt/cppdock/toolchains/emscripten.cmake',
-                    'service_init_script': '/opt/cppdock/recipes/default-emscripten'
-                }
-                return PlatformSpec(config, name, default_obj | obj)
+            case 'linux_x64' | 'emscripten':
+                return PlatformSpec(config, name,
+                                    platform_type_defaults[type] | obj)
+            case 'image':
+                return ImagePlatformSpec(config, name, obj)
             case 'nginx_proxy':
                 return NginxProxySpec(config, name, obj)
             case 'postgres':
@@ -296,6 +295,55 @@ class PlatformSpec(SpecBase):
     # Return an enumerated list of all deps.
     def enumerate_deps(self):
         return enumerate([x for xs in self.deps_stages for x in xs])
+
+    # Get the base image as a docker dep that locks it, or None.
+    def get_base_dep(self) -> Optional[DockerDepSpec]:
+        if self.base_image_dockerfile or not self.base_image:
+            return None
+        registry, name, tag = split_image_ref(self.base_image)
+        return DockerDepSpec(self, {'name': name, 'tag': tag,
+                                    'type': 'docker', 'registry': registry,
+                                    'revision': self.base_image_revision or ''})
+
+# Define the defaults of the toolchain platform types.
+platform_type_defaults: dict[str, JsonDict] = {
+    'linux_x64': {
+        'base_image': 'ricejasonf/cppdock:linux_x64',
+        'toolchain_file': '/opt/cppdock/toolchains/linux_x64.cmake',
+        'service_init_script': '/opt/cppdock/recipes/default'
+    },
+    'emscripten': {
+        'base_image': 'ricejasonf/cppdock:emscripten',
+        'toolchain_file': '/opt/cppdock/toolchains/emscripten.cmake',
+        'service_init_script': '/opt/cppdock/recipes/default-emscripten'
+    },
+}
+
+# Build an image from a Dockerfile whose base images are locked docker deps.
+class ImagePlatformSpec(PlatformSpec):
+    def __init__(self, config: 'Config', name: str, obj: JsonDict):
+        # Path of the Dockerfile
+        self.dockerfile: str = 'Dockerfile'
+        # Dockerfile stage to build (default: the last one)
+        self.target: Optional[str] = None
+
+        super().__init__(config, name, obj)
+        for _, dep in self.enumerate_deps():
+            if not isinstance(dep, DockerDepSpec) or not dep.build_arg:
+                raise ValueError(f'Image platform "{name}" takes only '
+                                 'docker deps with a "build_arg"')
+
+    # Build the image from the locked deps as its release image.
+    def make_image(self, print_only: bool):
+        if not print_only:
+            fetch_docker_deps(self)
+        with open(self.dockerfile, 'r') as fh:
+            dockerfile_data = fh.read()
+        build_args = {dep.build_arg: dep.get_image_ref()
+                      for _, dep in self.enumerate_deps()}
+        make_docker_image(get_release_tag_name(self), dockerfile_data,
+                          print_only, build_args = build_args,
+                          target = self.target)
 
 class ServiceSpec(PlatformSpec):
     def __init__(self, config: 'Config', name: str, obj: dict):
@@ -391,8 +439,6 @@ class Config(SpecBase):
         self.default_build_type: str = 'debug'
         # Make a nice name for the current project.
         self.project_name: str
-        # Specify docker image for cppdock stuff. (not locked)
-        self.cppdock_image: str = "ricejasonf/cppdock"
         # Define various platforms.
         self.platforms: dict[str, PlatformSpec] = {}
         # Define how to manage source code for the project
@@ -442,6 +488,15 @@ def qualify_image_name(name: str, registry: str = 'docker.io') -> str:
     if '/' not in name or has_registry_host(name):
         return name
     return registry + '/' + name
+
+# Split an image reference into its registry (or None), name and tag.
+def split_image_ref(image_ref: str) -> Tuple[Optional[str], str, str]:
+    registry = None
+    name = image_ref
+    if has_registry_host(image_ref):
+        registry, _, name = image_ref.partition('/')
+    name, _, tag = name.partition(':')
+    return registry, name, tag or 'latest'
 
 # Reject a docker dep name with a registry host; use "registry" instead.
 def check_dep_image_name(name: str):
@@ -637,6 +692,10 @@ def parse_args_release(args):
     parser.add_argument('--tag',        dest      = 'tag',
                                         default   = None,
                                         help      = 'Specify alternate tag')
+    parser.add_argument('--no-build',   dest      = 'no_build',
+                                        action    = 'store_true',
+                                        help      = 'Tag and push the release '
+                                                    'image already built')
     parser.add_argument('platform',     help      = 'Name of target platform')
 
     return parser.parse_args(args)
@@ -850,11 +909,17 @@ def command_release(args):
         raise ValueError(
                 'Platform "push_tag" property or cli "--tag" must be set')
 
-    make_build_image(platform, print_only)
-    install_dir = create_install_dir(platform)
-    run_build_image_install(platform, install_dir)
-    make_release_image(platform, install_dir)
     image_name = get_release_tag_name(platform)
+    if args.no_build:
+        if get_image_inspect(image_name) is None:
+            sys.exit(f'cppdock: release image {image_name} does not exist; '
+                     'run `cppdock release` without --no-build')
+    else:
+        make_build_image(platform, print_only)
+        if not isinstance(platform, ImagePlatformSpec):
+            install_dir = create_install_dir(platform)
+            run_build_image_install(platform, install_dir)
+            make_release_image(platform, install_dir)
     print(f'Tagging image {image_name}: {tag_name}')
     tag_image(image_name, tag_name)
     layers_lock, lock_ref = tag_image_with_lock(tag_name)
@@ -878,7 +943,13 @@ def make_build_image(platform: PlatformSpec, print_only = False):
     if isinstance(platform, ServiceSpec):
         platform.make_service_image(print_only)
         return
+    if isinstance(platform, ImagePlatformSpec):
+        platform.make_image(print_only)
+        return
 
+    base_dep = platform.get_base_dep()
+    if base_dep and not print_only:
+        base_dep.fetch()
     make_base_image(platform, print_only)
     if not print_only:
         fetch_docker_deps(platform)
@@ -943,11 +1014,14 @@ def make_nginx_proxy_image(platform: ServiceSpec, print_only):
         RUN echo $'{conf_data}' > /etc/nginx/nginx.conf
     """.format(conf_data = conf_data.replace('\n', '\\n\\\n'))
 
-    make_docker_image(tag_name, dockerfile, print_only)
+    make_docker_image(tag_name, dockerfile, print_only, pull = 'missing')
 
 def command_dev(args):
     config = load_config_file_with_args(args)
     platform = config.platforms[args.platform]
+    if isinstance(platform, ImagePlatformSpec):
+        sys.exit(f'cppdock: platform "{platform.name}" is an image; '
+                 'use `cppdock release`')
     set_master_machine(config)
     ports_arg = ' -p=' + args.port if hasattr(args, 'port') and args.port else None
     print_only = False
@@ -1229,6 +1303,7 @@ def lock_config_file_deps(config_obj):
                                                  'docker.io')
     for platform, settings in config_obj['platforms'].items():
         check_base_image_conflict(settings)
+        lock_base_image_json(settings, default_registry)
 
         for stage in settings.get('deps', []):
             if not isinstance(stage, list):
@@ -1237,6 +1312,27 @@ def lock_config_file_deps(config_obj):
                 item = lock_item_json(item, default_registry)
 
     return config_obj
+
+# Lock the base image of a platform after its "base_image" or "type".
+def lock_base_image_json(settings, default_registry):
+    if 'base_image_revision' in settings or \
+            'base_image_dockerfile' in settings:
+        return
+    type_defaults = platform_type_defaults.get(settings.get('type'), {})
+    base_image = settings.get('base_image') or type_defaults.get('base_image')
+    if base_image is None:
+        return
+    registry, name, tag = split_image_ref(base_image)
+    revision = get_current_sha_with_comment(
+        {'name': name, 'tag': tag, 'type': 'docker', 'registry': registry},
+        default_registry)
+    keys = list(settings)
+    after = 'base_image' if 'base_image' in settings else 'type'
+    position = keys.index(after) + 1 if after in settings else len(keys)
+    items = list(settings.items())
+    items.insert(position, ('base_image_revision', revision))
+    settings.clear()
+    settings.update(items)
 
 def lock_item_json(item, default_registry):
     current_sha = get_current_sha_with_comment(item, default_registry)
@@ -1298,29 +1394,38 @@ def get_user_base_tag_name(platform: PlatformSpec) -> str:
         return platform.base_image or get_base_tag_name(platform)
 
 def get_base_image_dockerfile_data(platform: PlatformSpec):
-    default_registry = platform.config.default_registry
-    tag_name = qualify_image_name(get_user_base_tag_name(platform),
-                                  default_registry)
-    cppdock_tag_name = qualify_image_name(platform.config.cppdock_image,
-                                          default_registry)
+    if base_dep := platform.get_base_dep():
+        tag_name = base_dep.get_image_ref()
+    else:
+        tag_name = qualify_image_name(get_user_base_tag_name(platform),
+                                      platform.config.default_registry)
 
     return """
 FROM {tag_name}
-    # installs cppdock in base image
-    COPY --from={cppdock_tag_name} /opt/install/ /usr/local
-    COPY --from={cppdock_tag_name} /opt/cppdock/ /opt/cppdock
+    # Install the running cppdock script.
+    COPY --from=cppdock_script cppdock /usr/local/bin/cppdock
     RUN mkdir -p /opt/install && \
         mkdir -p {build_dir} && \
         touch /opt/toolchain.cmake
     """.format(tag_name = tag_name,
-               cppdock_tag_name = cppdock_tag_name,
                build_dir = platform.build_dir)
 
 def make_base_image(platform: PlatformSpec, print_only):
     make_base_image_dockerfile(platform, print_only)
     dockerfile = get_base_image_dockerfile_data(platform)
     tag_name = get_base_tag_name(platform)
-    make_docker_image(tag_name, dockerfile, print_only)
+    with staged_cppdock_script() as script_dir:
+        make_docker_image(tag_name, dockerfile, print_only,
+                          build_contexts = {'cppdock_script': script_dir})
+
+# Make a directory that holds a copy of the running cppdock script.
+@contextlib.contextmanager
+def staged_cppdock_script():
+    with tempfile.TemporaryDirectory(prefix = 'cppdock_script.') as dir:
+        path = os.path.join(dir, 'cppdock')
+        shutil.copyfile(os.path.realpath(__file__), path)
+        os.chmod(path, 0o755)
+        yield dir
 
 def make_base_image_dockerfile(platform: PlatformSpec, print_only):
     base_image_dockerfile = platform.base_image_dockerfile
@@ -1331,7 +1436,8 @@ def make_base_image_dockerfile(platform: PlatformSpec, print_only):
 
         with open(dockerfile, 'r') as file:
             dockerfile_data = file.read()
-        make_docker_image(tag_name, dockerfile_data, print_only)
+        make_docker_image(tag_name, dockerfile_data, print_only,
+                          pull = 'missing')
 
 def find_recipe(platform: str, repo):
     if os.path.isfile('/opt/cppdock_recipe'):
@@ -1374,14 +1480,26 @@ def check_sysroot():
 def get_arg(args, i):
     return next(iter(args[i:i+1]), None)
 
-def make_docker_image(tag_name, dockerfile_data, print_only = False, context_dir = '.'):
+# Build an image, pulling only as `pull` allows.
+def make_docker_image(tag_name, dockerfile_data, print_only = False,
+                      context_dir = '.', pull = 'never',
+                      build_args: dict[str, str] = {},
+                      build_contexts: dict[str, str] = {},
+                      target: Optional[str] = None):
     if print_only:
         print('###### Docker Image: ' + tag_name + ' ######')
         print(dockerfile_data)
         return
-    p = subprocess.Popen([container_engine, 'buildx', 'build',
-                          '--tag=' + tag_name, '--file=-', context_dir],
-                         stdin=subprocess.PIPE)
+    cmd = [container_engine, 'buildx', 'build',
+           '--tag=' + tag_name, '--file=-']
+    # Pass the pull policy to podman only.
+    if container_engine == 'podman':
+        cmd.append('--pull=' + pull)
+    cmd += [f'--build-arg={k}={v}' for k, v in build_args.items()]
+    cmd += [f'--build-context={k}={v}' for k, v in build_contexts.items()]
+    if target:
+        cmd.append('--target=' + target)
+    p = subprocess.Popen(cmd + [context_dir], stdin=subprocess.PIPE)
     out, err = p.communicate(bytes(dockerfile_data, 'utf-8'))
     if p.returncode == 0:
         print("Finished building {0}.".format(tag_name))
@@ -1661,12 +1779,11 @@ def clean_install_files(platform: PlatformSpec, install_dir):
     # because the cppdock user wont have to permissions
     if not os.path.isdir(install_dir):
         return
-    base_image = qualify_image_name(platform.config.cppdock_image,
-                                    platform.config.default_registry)
+    base_image = get_base_tag_name(platform)
     assert install_dir.startswith('/tmp/') and install_dir.endswith('.install'), "Must only delete valid install path"
     cmd = ['/bin/bash', '-c', 'rm -rf /opt/install/*']
     mount_install = get_run_options_mount_install(platform, install_dir)
-    cmd = remove_none([container_engine, 'run', '--rm']
+    cmd = remove_none([container_engine, 'run', '--rm', '--pull=never']
                       + mount_install
                       + [ base_image ]
                       + cmd)

@@ -1,0 +1,60 @@
+{
+  "cppdock": {
+    "name": "cppdock"
+  },
+  "platforms": {
+    "cppdock": {
+      "type": "image",
+      "dockerfile": "Dockerfile",
+      "push_tag": "ricejasonf/cppdock",
+      "deps": [
+        [
+          {
+            "name": "library/ubuntu",
+            "tag": "25.10",
+            "type": "docker",
+            "build_arg": "UBUNTU",
+            "revision": "sha256:e0b84ef30bbe766773e6056c60a3e706712e4119508e3da12516f1eddd6f761b"
+          }
+        ]
+      ]
+    },
+    "linux_x64": {
+      "type": "image",
+      "dockerfile": "Dockerfile-linux_x64",
+      "push_tag": "ricejasonf/cppdock:linux_x64",
+      "deps": [
+        [
+          {
+            "name": "ricejasonf/cppdock",
+            "type": "docker",
+            "build_arg": "CPPDOCK",
+            "revision": "layers:sha256:430d584fb88f6e45f2bb0af1b06534be8ff256dc25706480e1d38f368823656e"
+          },
+          {
+            "name": "ricejasonf/llvm-project-release",
+            "type": "docker",
+            "build_arg": "LLVM",
+            "revision": "sha256:a813635aa0e512cb81db1d99f16f9559d43b8876e88dc2527a37a111346da446"
+          }
+        ]
+      ]
+    },
+    "emscripten": {
+      "type": "image",
+      "dockerfile": "Dockerfile-emscripten",
+      "push_tag": "ricejasonf/cppdock:emscripten",
+      "deps": [
+        [
+          {
+            "name": "ricejasonf/cppdock",
+            "tag": "linux_x64",
+            "type": "docker",
+            "build_arg": "LINUX_X64",
+            "revision": "layers:sha256:31d96e1e2dab478ba0fead1bb1b63327951438fa8851f53a8f028fd991b41cc7"
+          }
+        ]
+      ]
+    }
+  }
+}
