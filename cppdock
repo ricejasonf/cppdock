@@ -1124,6 +1124,9 @@ def command_install_dep(args):
               '/opt/src')
     p = subprocess.Popen([recipe], cwd = '/opt/build')
     p.communicate('')
+    # Keep the dep's recipe from applying to later deps in the stage.
+    if recipe == '/opt/recipe_script':
+        os.remove(recipe)
     if p.returncode != 0:
         print("""
 
@@ -1515,14 +1518,13 @@ def make_base_image_dockerfile(platform: PlatformSpec, print_only):
                           pull = 'missing')
 
 def find_recipe(platform: str, repo):
-    if os.path.isfile('/opt/cppdock_recipe'):
-        return '/opt/cppdock_recipe'
+    # Use the dep's "recipe_script" (see make_install_dep.)
+    if os.path.isfile('/opt/recipe_script'):
+        return '/opt/recipe_script'
 
     # make a flat list of recipe file paths
     # to search linearly
     base_paths = [
-            # User recipes (copied from ./cppdock_recipes)
-            '/opt/cppdock_recipes',
             # Base image provided specific recipes
             '/opt/sysroot/cppdock_recipes',
             # Default recipes

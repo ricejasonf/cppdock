@@ -6,9 +6,15 @@
 
 ## Overview
 
-CppDock is just a tiny python script that uses a JSON config file to specify project specific values and platform specific dependencies based on GitHub.
+CppDock is a Python script that reads a `cppdock.json` file of platforms and their locked dependencies, builds container images with those dependencies installed, and builds the project in them.
 
-In the simple `my_app` example, running `cppdock build linux_x64` will create a Docker image called `my_app_deps:linux_64`.
+The main commands each take a platform name:
+
+- `cppdock init` locks every dep that has no `revision` and writes the locks back to `cppdock.json`. Every other command does this too.
+- `cppdock build <platform>` builds the image `<project>-<platform>-build` with the deps installed in its sysroot.
+- `cppdock dev <platform>` opens a shell in that image, with the source mounted at `/opt/src` and a build volume at `/opt/build`. `--target check` builds a target instead and exits with its status.
+- `cppdock release <platform>` builds the `install` target and tags an image of `/opt/install` with the platform's `push_tag` and its layers tag. `--push` pushes both.
+- `cppdock clean build <platform>` removes the build volume.
 
 ### Container Engine
 
@@ -124,36 +130,18 @@ While a local file is present:
 
 ### Custom Recipes
 
-Recipes are just bash scripts that are run in a Docker container.
+Recipes are bash scripts that run in the container from `/opt/build`, with the source in `/opt/src`. Every recipe should install to `/opt/install`.
 
-The default recipe assumes a typical CMake build:
+The default recipes (`recipes/default`, and `recipes/default-emscripten` for emscripten) configure the source with CMake and build `$TARGET`. The project itself is built with the platform's `service_init_script`, which is the default recipe for the `linux_x64` and `emscripten` types.
 
-```bash
-#!/bin/bash
+A git dep uses the first recipe found:
 
-mkdir build && cd build \
-&& cmake \
-    -DCMAKE_TOOLCHAIN_FILE=/opt/toolchain.cmake \
-    -DCMAKE_INSTALL_PREFIX=/opt/install \
-    -DCMAKE_BUILD_TYPE=Release \
-    .. \
-&& make install
-```
-
-Custom recipes can be placed in your project's `./cppdock_recipes` directory.
-
-Consider the following as an example describing recipe resolution.
-
-```
-./cppdock_recipes/chriskohlhoff-asio-linux_x64
-./cppdock_recipes/chriskohlhoff-asio
-./cppdock_recipes/default
-{Then resolves using builtin recipes}
-```
-
-As you can see a platform specific recipe is the first in the order of resolution where the platform in this case is `linux_x64`.
-
-Note that every build should install to `/opt/install`.
+1. The dep's `recipe_script`, a path in the project (or in the image, if it starts with `/opt/`).
+2. In `/opt/sysroot/cppdock_recipes` of the base image, then in the built-in `/opt/cppdock/recipes`, a file named after the repo and the platform name:
+   - `<owner>-<repo>-<platform>`, such as `chriskohlhoff-asio-develop`
+   - `<owner>-<repo>`
+   - `default-<platform>`
+   - `default`
 
 ### Custom Compilers and SDKs
 
