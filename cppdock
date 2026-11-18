@@ -1217,25 +1217,30 @@ def command_update_source(args):
 # Clone `repo` at `tag` into `path`, or move an existing clean clone to it.
 def update_source_checkout(path: str, repo: str, tag: Optional[str]):
     if not os.path.exists(path) or not os.listdir(path):
-        print(f'cppdock: cloning {repo} into {path}')
+        print(f'cppdock: cloning {repo} into {path}', flush = True)
         branch = ['--branch', tag] if tag else []
         subprocess.check_call(['git', 'clone', '--depth=1'] + branch +
                               [repo, path])
+        subprocess.check_call(['git', '--no-pager', '-C', path, 'log', '-1'])
         return
     def git(*git_args):
         return subprocess.check_output(['git', '-C', path] + list(git_args),
                                        text = True).strip()
+    if git('rev-parse', '--is-shallow-repository') != 'true':
+        sys.exit(f'cppdock: {path} is not a shallow clone')
     if git('status', '--porcelain', '--untracked-files=no'):
         sys.exit(f'cppdock: {path} has uncommitted changes')
     old_revision = git('rev-parse', 'HEAD')
+    old_log = git('log', '-1')
     subprocess.check_call(['git', '-C', path, 'fetch', '--depth=1', repo] +
                           ([tag] if tag else []))
     git('reset', '--hard', 'FETCH_HEAD')
     new_revision = git('rev-parse', 'HEAD')
     if new_revision == old_revision:
-        print(f'cppdock: {path} is up to date at {new_revision}')
+        print(f'cppdock: {path} is up to date at:\n\n{old_log}')
     else:
-        print(f'cppdock: updated {path} from {old_revision} to {new_revision}')
+        print(f'cppdock: updated {path} from:\n\n{old_log}\n\n'
+              f'cppdock: to:\n\n{git("log", "-1")}')
 
 def command_clean(args):
     # Use `cppdock dev_cluster --stop` for deployed stacks.

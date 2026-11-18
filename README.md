@@ -15,7 +15,7 @@ The main commands each take a platform name:
 - `cppdock dev <platform>` opens a shell in that image, with the source mounted at `/opt/src` and a build volume at `/opt/build`. `--target check` builds a target instead and exits with its status.
 - `cppdock release <platform>` builds the `install` target and tags an image of `/opt/install` with the platform's `push_tag` and its layers tag. `--push` pushes both.
 - `cppdock clean build <platform>` removes the build volume.
-- `cppdock update_source` clones the source's `repo` at its `tag` into the source `path`, or fetches the `tag` and resets a clean checkout to it. It takes no platform.
+- `cppdock update_source` clones the source's `repo` at its `tag` into the source `path`, or fetches the `tag` and resets a clean shallow checkout to it. It takes no platform.
 
 ### Container Engine
 

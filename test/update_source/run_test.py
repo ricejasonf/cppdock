@@ -50,7 +50,7 @@ def test_update_source():
         git(tmp, 'init', '-q', repo)
         first = commit(repo, 'feature', 'first')
         config = {'cppdock': {'name': 'test'},
-                  'source': {'type': 'mount', 'repo': repo,
+                  'source': {'type': 'mount', 'repo': 'file://' + repo,
                              'tag': 'feature', 'path': './source'},
                   'platforms': {}}
         write_json(os.path.join(work_dir, 'cppdock.json'), config)
@@ -59,6 +59,8 @@ def test_update_source():
         code, output = run_cppdock(work_dir, ['update_source'])
         check(code == 0, 'clone failed:\n' + output)
         check(git(source, 'rev-parse', 'HEAD') == first, 'clone not at tag')
+        check(git(source, 'rev-parse', '--is-shallow-repository') == 'true',
+              'clone not shallow')
 
         # Rewrite the branch, as a rebased fork does.
         git(repo, 'checkout', '-q', '--orphan', 'other')
@@ -67,6 +69,8 @@ def test_update_source():
         check(code == 0, 'update failed:\n' + output)
         check(git(source, 'rev-parse', 'HEAD') == second,
               'update did not follow a rewritten branch')
+        check('first' in output and 'second' in output,
+              'update did not show the old and new commits:\n' + output)
 
         with open(os.path.join(source, 'file'), 'w') as fh:
             fh.write('dirty')
@@ -88,6 +92,30 @@ def test_update_source():
             check(json.load(fh)['source']['path'] == './source',
                   'local source path written to cppdock.json')
 
+def test_full_clone():
+    with tempfile.TemporaryDirectory() as tmp:
+        repo = os.path.join(tmp, 'repo')
+        work_dir = os.path.join(tmp, 'work')
+        source = os.path.join(work_dir, 'source')
+        os.makedirs(work_dir)
+        git(tmp, 'init', '-q', repo)
+        commit(repo, 'feature', 'first')
+        git(tmp, 'clone', '-q', '--branch', 'feature', repo, source)
+        local = commit(source, 'feature', 'local')
+        commit(repo, 'feature', 'second')
+        write_json(os.path.join(work_dir, 'cppdock.json'),
+                   {'cppdock': {'name': 'test'},
+                    'source': {'type': 'mount', 'repo': 'file://' + repo,
+                               'tag': 'feature', 'path': './source'},
+                    'platforms': {}})
+        code, output = run_cppdock(work_dir, ['update_source'])
+        check(code != 0 and 'not a shallow clone' in output,
+              'updated a full clone')
+        check(git(source, 'rev-parse', 'HEAD') == local,
+              'moved a full clone')
+        check(git(source, 'rev-parse', '--is-shallow-repository') == 'false',
+              'made a full clone shallow')
+
 def test_no_repo():
     with tempfile.TemporaryDirectory() as work_dir:
         write_json(os.path.join(work_dir, 'cppdock.json'),
@@ -97,5 +125,6 @@ def test_no_repo():
               'update_source ran without a repo')
 
 test_update_source()
+test_full_clone()
 test_no_repo()
 print('PASS')
