@@ -29,13 +29,13 @@
             "name": "ricejasonf/cppdock",
             "type": "docker",
             "build_arg": "CPPDOCK",
-            "revision": "layers:sha256:e57502f1eb0f421ed9353148b7d2f9e9ce6b91b192faaf8a7be1d7532eae2b37"
+            "revision": "layers:sha256:b20e3e65e2c9f65e204fc1a42dc8666cf4e64fb18e65500bee75ea85a6d5d2c5"
           },
           {
             "name": "ricejasonf/llvm-project-release",
             "type": "docker",
             "build_arg": "LLVM",
-            "revision": "sha256:a813635aa0e512cb81db1d99f16f9559d43b8876e88dc2527a37a111346da446"
+            "revision": "layers:sha256:f867be503b30760ee2f7b5ea08d38d6456ff4fd0a6e9c1c0d0d95a67ec1d227b"
           }
         ]
       ]
@@ -51,7 +51,7 @@
             "tag": "linux_x64",
             "type": "docker",
             "build_arg": "LINUX_X64",
-            "revision": "layers:sha256:85256c0e4687b3f1aff274ad3d47eb3cb83fc3175e6a765446551b79e8e43947"
+            "revision": "layers:sha256:795c7ab5ea8e81387f8038624d25db24cd00154e4044347cece02ec64715b5aa"
           }
         ]
       ]
