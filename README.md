@@ -15,6 +15,7 @@ The main commands each take a platform name:
 - `cppdock dev <platform>` opens a shell in that image, with the source mounted at `/opt/src` and a build volume at `/opt/build`. `--target check` builds a target instead and exits with its status.
 - `cppdock release <platform>` builds the `install` target and tags an image of `/opt/install` with the platform's `push_tag` and its layers tag. `--push` pushes both.
 - `cppdock clean build <platform>` removes the build volume.
+- `cppdock update_source` clones the source's `repo` at its `tag` into the source `path`, or fetches the `tag` and resets a clean checkout to it. It takes no platform.
 
 ### Container Engine
 
@@ -127,6 +128,20 @@ While a local file is present:
 
 - Builds use a separate build volume, named with a `-local` suffix.
 - `cppdock release --push` refuses to run.
+
+A local file that sets only `source.path` is exempt from both, since it moves the checkout without changing what is built. `cppdock update_source` uses that path.
+
+### LLVM Release Image
+
+`images/llvm-project-release` builds `ricejasonf/llvm-project-release`, the LLVM fork that the `linux_x64` image installs. It builds on `linux_x64` itself, and the build takes hours.
+
+```sh
+cd images/llvm-project-release
+cppdock update_source
+cppdock release main --push
+```
+
+Then relock the `ricejasonf/llvm-project-release` dep of `linux_x64` in the top-level `cppdock.json`.
 
 ### Custom Recipes
 

@@ -1,0 +1,22 @@
+{
+  "cppdock": {
+    "name": "llvm-project-release"
+  },
+  "source": {
+    "type": "mount",
+    "repo": "https://github.com/ricejasonf/llvm-project.git",
+    "tag": "ricejasonf/parser-pragma",
+    "path": "./source"
+  },
+  "platforms": {
+    "main": {
+      "type": "linux_x64",
+      "base_image_revision": "layers:sha256:85256c0e4687b3f1aff274ad3d47eb3cb83fc3175e6a765446551b79e8e43947",
+      "build_type": "release",
+      "toolchain_file": "./toolchain.cmake",
+      "release_target": "install install-runtimes",
+      "service_init_script": "cppdock_service_init.sh",
+      "push_tag": "ricejasonf/llvm-project-release"
+    }
+  }
+}

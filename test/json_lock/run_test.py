@@ -476,6 +476,29 @@ def test_local_push():
           'release pushed with local overrides')
     check(result.remote == set(), 'release pushed with local overrides')
 
+def test_local_source_path():
+    config = docker_dep_config(layers_lock(cppdock_layers))
+    result = run_cppdock(['dev', 'main', '--target', 'check'], config,
+        local = base_local |
+            {cppdock_lock_ref: image(cppdock_image, cppdock_layers)},
+        files = local_file({'source': {'path': '/elsewhere'}}))
+    runs = [line for line in result.log if line.startswith('run ')]
+    check(len(runs) == 1 and
+          'source=/elsewhere,target=/opt/src' in runs[0],
+          'local source path not mounted')
+    check('--volume test_fetch-main-debug:/opt/build' in runs[0],
+          'local source path selected the local build volume')
+
+    result = run_cppdock(['release', '--push', '--no-build', 'img'],
+        image_config(),
+        local = {'test_image-img': image('test_image-img',
+                                         ['sha256:test_image-img'])},
+        files = local_file({'source': {'path': '/elsewhere'}}))
+    released = lock_tag('docker.io/ricejasonf/img', ['sha256:test_image-img'])
+    check(result.returncode == 0 and
+          {'docker.io/ricejasonf/img', released} <= result.remote,
+          'release with a local source path refused to push')
+
 test_lock_digest()
 test_lock_layers()
 test_lock_local()
@@ -501,4 +524,5 @@ test_local_base_image()
 test_local_unknown()
 test_local_cmake_args()
 test_local_push()
+test_local_source_path()
 print('PASS')
