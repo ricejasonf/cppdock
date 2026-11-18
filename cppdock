@@ -1120,6 +1120,10 @@ def command_install_dep(args):
     recipe = find_recipe(args.platform, args.repo)
     source_dir = [x for x in os.listdir('.') \
                     if x.endswith(args.branch)][0]
+    # Clear the source and build of an earlier dep in the stage.
+    shutil.rmtree('/opt/src', ignore_errors = True)
+    shutil.rmtree('/opt/build', ignore_errors = True)
+    os.mkdir('/opt/build')
     os.rename(os.path.join('/usr/local/src/', source_dir),
               '/opt/src')
     p = subprocess.Popen([recipe], cwd = '/opt/build')
